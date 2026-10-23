@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>penna</title>
+    <script src="/vendor/tailwind.js"></script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="side">
+        <header id="side-head">
+          <span class="logo">penna</span>
+          <select id="file-select" title="Design file"></select>
+        </header>
+        <section class="panel">
+          <h2>Pages</h2>
+          <ul id="pages"></ul>
+        </section>
+        <section class="panel grow">
+          <h2>Layers</h2>
+          <div id="layers"></div>
+        </section>
+      </aside>
+      <main id="viewport">
+        <div id="world" class="pn-root"></div>
+        <div id="labels"></div>
+        <div id="hover-box" class="box"></div>
+        <div id="select-box" class="box"></div>
+        <div id="empty" hidden>
+          <p>No designs yet.</p>
+          <p class="muted">Ask your agent to create one. Files live in <code>.penna/</code>.</p>
+        </div>
+        <footer id="hud">
+          <div id="info"></div>
+          <div class="hud-right">
+            <label class="follow" title="Jump to where the agent is working"><input type="checkbox" id="follow" checked /> Follow agent</label>
+            <span id="status" title="Connection"></span>
+            <button id="zoom" title="Zoom to fit (Shift+1)">100%</button>
+          </div>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

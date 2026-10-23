@@ -1,0 +1,67 @@
+{
+  "name": "@marcoazzurrini/penna",
+  "version": "0.1.0",
+  "description": "Agent-first design canvas that lives in your repo. Designs are JSON in .penna/, rendered as real HTML/CSS in a localhost viewer, edited by AI agents through one execute tool.",
+  "keywords": [
+    "design",
+    "canvas",
+    "mcp",
+    "ai-agent",
+    "claude",
+    "figma-alternative",
+    "tailwind",
+    "prototyping"
+  ],
+  "license": "MIT",
+  "author": "Marco Azzurrini",
+  "homepage": "https://github.com/marcoazzurrini/penna#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marcoazzurrini/penna.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marcoazzurrini/penna/issues"
+  },
+  "type": "module",
+  "bin": {
+    "penna": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "AGENT.md"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "vite build && esbuild src/cli.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli.js",
+    "dev": "node src/cli.ts dev",
+    "typecheck": "tsc",
+    "test": "node --test test/*.test.ts",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "npm run build && changeset publish",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@tailwindcss/browser": "^4.3.3",
+    "lucide-static": "^1.61.0",
+    "playwright-core": "^1.64.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@changesets/changelog-git": "^1.0.0",
+    "@changesets/cli": "^3.0.3",
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.penna/.server.json
+.penna/.shots/
