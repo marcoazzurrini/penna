@@ -1,25 +1,15 @@
 :root {
-  --ui-bg: #ffffff;
-  --ui-fg: #1d1d1f;
-  --ui-muted: #8a8a8e;
-  --ui-line: #e6e6e8;
-  --ui-hover: #f2f2f4;
-  --ui-accent: #2f6bff;
-  --ui-accent-soft: #e6eeff;
-  --canvas: #ececee;
   color-scheme: light dark;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ui-bg: #1f1f21;
-    --ui-fg: #ececee;
-    --ui-muted: #8e8e93;
-    --ui-line: #2e2e31;
-    --ui-hover: #2a2a2d;
-    --ui-accent: #5b8cff;
-    --ui-accent-soft: #23304d;
-    --canvas: #161618;
-  }
+  --ui-bg: light-dark(oklch(1 0 none), oklch(0.235 0 none));
+  --ui-fg: light-dark(oklch(0.235 0 none), oklch(0.94 0 none));
+  --ui-muted: light-dark(oklch(0.6 0 none), oklch(0.66 0 none));
+  --ui-line: light-dark(oklch(0.925 0 none), oklch(0.3 0 none));
+  --ui-hover: light-dark(oklch(0.962 0 none), oklch(0.28 0 none));
+  --ui-press: color-mix(in oklch, var(--ui-hover), var(--ui-fg) 6%);
+  --ui-accent: light-dark(oklch(0.58 0.22 262), oklch(0.68 0.17 262));
+  --ui-accent-soft: color-mix(in oklch, var(--ui-accent) 14%, transparent);
+  --ui-component: light-dark(oklch(0.56 0.21 293), oklch(0.72 0.15 293));
+  --canvas: light-dark(oklch(0.94 0 none), oklch(0.19 0 none));
 }
 
 html,
@@ -37,47 +27,62 @@ body {
   color: var(--ui-fg);
 }
 
+/* Icons are Lucide SVGs used as masks, so they take the text color. */
+.ico {
+  display: inline-block;
+  flex: none;
+  inline-size: 1.2em;
+  block-size: 1.2em;
+  background-color: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
 /* Sidebar */
 #side {
   display: flex;
   flex-direction: column;
   background: var(--ui-bg);
-  border-right: 1px solid var(--ui-line);
+  border-inline-end: 1px solid var(--ui-line);
   min-height: 0;
   user-select: none;
 }
 #side-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--ui-line);
+  align-items: baseline;
+  gap: 6px;
+  padding: 14px 14px 12px;
 }
 .logo {
+  font-size: 13px;
   font-weight: 650;
   letter-spacing: -0.01em;
 }
 #project {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
   color: var(--ui-muted);
 }
+#project:not(:empty)::before {
+  content: "/";
+  margin-inline-end: 6px;
+  color: var(--ui-line);
+}
 .panel {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--ui-line);
+  padding-block: 6px 10px;
+  border-block-start: 1px solid var(--ui-line);
 }
 .panel.grow {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-bottom: 0;
 }
 .panel h2 {
   margin: 0;
-  padding: 2px 12px 6px;
+  padding: 8px 14px 4px;
   font-size: 11px;
   font-weight: 600;
   color: var(--ui-muted);
@@ -89,54 +94,100 @@ body {
   max-height: 30vh;
   overflow: auto;
 }
-#pages li,
+
+/* Rows shared by pages and layers: inset, rounded, one line. */
+.row,
 .layer {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: 6px;
+  box-sizing: border-box;
+  inline-size: calc(100% - 12px);
+  block-size: 28px;
+  margin-inline: 6px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
   cursor: default;
 }
-#pages li:hover,
-.layer:hover {
-  background: var(--ui-hover);
+.row:active,
+.layer:active {
+  background: var(--ui-press);
 }
-#pages li.active {
+@media (hover: hover) and (pointer: fine) {
+  .row:hover,
+  .layer:hover {
+    background: var(--ui-hover);
+  }
+}
+.row:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+.row.active {
+  background: var(--ui-hover);
   font-weight: 600;
 }
+.lname {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+.row .count {
+  flex: none;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--ui-muted);
+}
+
 #layers {
   flex: 1;
   overflow: auto;
-  padding-bottom: 24px;
+  padding-block-end: 24px;
+}
+.layer {
+  gap: 4px;
+  padding-inline-end: 8px;
+}
+.layer .twisty {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 14px;
+  block-size: 100%;
+  color: var(--ui-muted);
+}
+.layer .twisty .ico {
+  inline-size: 1em;
+  block-size: 1em;
+}
+.layer.open .twisty .ico {
+  rotate: 90deg;
+}
+.layer .kind {
+  margin-inline-end: 2px;
+  color: var(--ui-muted);
 }
 .layer.selected {
   background: var(--ui-accent-soft);
 }
-.layer .twisty {
-  width: 14px;
-  flex: none;
-  text-align: center;
-  color: var(--ui-muted);
-  font-size: 9px;
+.layer.selected .kind {
+  color: var(--ui-accent);
 }
-.layer .kind {
-  width: 14px;
-  flex: none;
-  color: var(--ui-muted);
-  font-size: 10px;
-  text-align: center;
+.layer.component,
+.layer.instance,
+.layer.component .kind,
+.layer.instance .kind {
+  color: var(--ui-component);
 }
-.layer .lname {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.layer.component .lname,
-.layer.instance .lname {
-  color: #8b5cf6;
+.layer.hidden-node {
+  opacity: 0.45;
 }
 
 /* Canvas */

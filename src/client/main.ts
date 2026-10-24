@@ -194,20 +194,42 @@ function startViewer() {
     pagesEl.textContent = "";
     for (const p of doc?.pages ?? []) {
       const li = document.createElement("li");
-      li.textContent = p.name;
-      li.className = p.id === pageId ? "active" : "";
-      li.onclick = () => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = p.id === pageId ? "row active" : "row";
+      if (p.id === pageId) btn.setAttribute("aria-current", "page");
+      btn.innerHTML = `<span class="lname"></span><span class="count"></span>`;
+      btn.firstElementChild!.textContent = p.name;
+      btn.lastElementChild!.textContent = p.children.length ? String(p.children.length) : "";
+      btn.onclick = () => {
         if (p.id === pageId) return;
         saveCamera();
         pageId = p.id;
         selected = null;
         renderDoc(false);
       };
+      li.appendChild(btn);
       pagesEl.appendChild(li);
     }
   }
 
-  const KIND: Record<string, string> = { frame: "▢", text: "T", image: "▣", icon: "★", svg: "✎", ref: "◇" };
+  const KIND: Record<string, string> = { text: "type", image: "image", icon: "shapes", svg: "spline", ref: "diamond" };
+  const icon = (name: string, cls = "") => `<i class="ico ${cls}" style="--i:url(/icon/${name}.svg)"></i>`;
+
+  /** Lucide icon for a layer row. Frames show their layout, like Figma's auto layout icons. */
+  function kindIcon(n: PennaNode, depth: number): string {
+    if (n.component) return "component";
+    if (n.type !== "frame") return KIND[n.type] ?? "square-dashed";
+    if (depth === 0) return "frame";
+    const display = String(n.style?.display ?? "");
+    const cls = ` ${n.class ?? ""} `;
+    if (display === "grid" || / grid /.test(cls)) return "layout-grid";
+    if (display === "flex" || / flex /.test(cls)) {
+      const column = String(n.style?.flexDirection ?? "").startsWith("column") || / flex-col /.test(cls);
+      return column ? "rows-3" : "columns-3";
+    }
+    return "square-dashed";
+  }
 
   function renderLayers() {
     layersEl.textContent = "";
@@ -227,12 +249,13 @@ function startViewer() {
       if (n.type === "ref") div.classList.add("instance");
       // Parts of an instance aren't listed, so highlight the instance itself.
       if (selected && (n.id === selected || n.id === selected.split("/")[0])) div.classList.add("selected");
-      div.style.paddingLeft = 8 + depth * 12 + "px";
+      div.style.paddingInlineStart = 4 + depth * 14 + "px";
       const hasKids = !!n.children?.length;
       const open = expanded.has(n.id);
-      div.innerHTML = `<span class="twisty">${hasKids ? (open ? "▾" : "▸") : ""}</span><span class="kind">${n.component ? "❖" : KIND[n.type] ?? ""}</span><span class="lname"></span>`;
+      if (open) div.classList.add("open");
+      div.innerHTML = `<span class="twisty">${hasKids ? icon("chevron-right") : ""}</span>${icon(kindIcon(n, depth), "kind")}<span class="lname"></span>`;
       div.querySelector(".lname")!.textContent = n.name ?? n.id;
-      if (n.hidden) div.style.opacity = "0.45";
+      if (n.hidden) div.classList.add("hidden-node");
       div.querySelector(".twisty")!.addEventListener("click", (e) => {
         e.stopPropagation();
         if (open) expanded.delete(n.id);
