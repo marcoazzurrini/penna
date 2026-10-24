@@ -1,3 +1,5 @@
+<img src="src/client/favicon.svg" width="56" height="56" alt="">
+
 # penna
 
 An agent-first design canvas that lives in your repo, like Storybook does.

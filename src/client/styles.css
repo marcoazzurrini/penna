@@ -49,14 +49,18 @@ body {
 }
 #side-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   padding: 14px 14px 12px;
 }
 .logo {
+  display: flex;
   font-size: 13px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+}
+.logo .mark {
+  flex: none;
+  inline-size: 1.45em;
+  block-size: 1.45em;
 }
 #project {
   min-width: 0;
