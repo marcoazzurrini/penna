@@ -97,3 +97,52 @@ test("invalid file names are rejected", async () => {
   assert.equal(r.ok, false);
   assert.equal(store.get("../escape"), undefined);
 });
+
+test("instances can use components from another file", async () => {
+  const lib = await run(`
+    SetVariables({accent: "#f00"})
+    Insert(page, {name: "Badge", component: true, children: [{name: "Label", text: "New"}]})
+    Insert(page, {name: "Card", component: true, children: [{name: "Title", text: "T"}, {ref: "Badge"}]})`, "ds");
+  assert.equal(lib.ok, true, lib.text);
+  const card = store.get("ds")!.pages[0].children[1];
+  assert.equal(card.children![1].ref, store.get("ds")!.pages[0].children[0].id);
+
+  const r = await run(`
+    inst = Insert(page, {ref: "ds#Card", overrides: {Title: {text: "Hello"}}})
+    Print(Get(inst + "/Title").text)
+    Print(JSON.stringify(Components().map((c) => c.ref)))
+    Print(Tree())`);
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /^Hello/);
+  assert.match(r.text, /"ds#\w+"/);
+  assert.match(r.text, /→ds#Card/);
+  assert.equal(doc().pages[0].children[0].ref, `ds#${card.id}`);
+  assert.equal(doc().pages[0].children[0].name, "Card");
+  assert.doesNotMatch(r.text, /Warnings/);
+
+  // The render document carries the library components, with nested refs made absolute,
+  // and the library's variables.
+  const { withLibraries } = await import("../src/server/libs.ts");
+  const { doc: rd, files } = withLibraries(store, "design", doc());
+  assert.deepEqual([...files], ["ds"]);
+  assert.equal(rd.variables?.accent, "#f00");
+  assert.equal(rd.libs![`ds#${card.id}`].children![1].ref, `ds#${store.get("ds")!.pages[0].children[0].id}`);
+  assert.ok(rd.libs![rd.libs![`ds#${card.id}`].children![1].ref!]);
+});
+
+test("refs to missing files or components fail with a hint", async () => {
+  const noFile = await run(`Insert(page, {ref: "nope#Card"})`);
+  assert.equal(noFile.ok, false);
+  assert.match(noFile.text, /No design file "nope"/);
+  await run(`Insert(page, {name: "X"})`, "ds");
+  const noComp = await run(`Insert(page, {ref: "ds#Card"})`);
+  assert.match(noComp.text, /No component "Card" in "ds"/);
+});
+
+test("Icons finds names by word and tag, and unknown icons suggest matches", async () => {
+  // "home" is an old alias of "house".
+  const r = await run(`Print(Icons("home")[0], Icons("credit card")[0])`);
+  assert.match(r.text, /^house credit-card/);
+  const w = await run(`Insert(page, {icon: "logout"})`);
+  assert.match(w.text, /Unknown Lucide icon "logout"\. Close matches: log-out/);
+});

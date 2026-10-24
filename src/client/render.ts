@@ -1,9 +1,9 @@
 import { styleToCss, variablesToCss } from "../shared/style.ts";
 import { expandRef, type Located } from "../shared/tree.ts";
-import type { PennaDoc, PennaNode } from "../shared/types.ts";
+import type { PennaNode, RenderDoc } from "../shared/types.ts";
 
 export interface RenderCtx {
-  doc: PennaDoc;
+  doc: RenderDoc;
   index: Map<string, Located>;
 }
 
@@ -125,7 +125,7 @@ function missing(node: PennaNode): HTMLElement {
 }
 
 /** Font families used anywhere in the document, for loading from Google Fonts. */
-export function fontFamilies(doc: PennaDoc): string[] {
+export function fontFamilies(doc: RenderDoc): string[] {
   const found = new Set<string>();
   const add = (value: unknown) => {
     if (typeof value !== "string") return;
@@ -140,6 +140,7 @@ export function fontFamilies(doc: PennaDoc): string[] {
     n.children?.forEach(visit);
   };
   doc.pages.forEach((p) => p.children.forEach(visit));
+  Object.values(doc.libs ?? {}).forEach(visit);
   for (const v of Object.values(doc.variables ?? {})) if (/^\s*["']?[A-Z]/.test(v) && !v.includes("(")) add(v);
   for (const t of Object.values(doc.themes ?? {})) for (const v of Object.values(t)) if (/^\s*["']?[A-Z]/.test(v) && !v.includes("(")) add(v);
   return [...found].sort();

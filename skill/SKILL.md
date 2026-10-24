@@ -1,4 +1,11 @@
-Run a JavaScript snippet that reads and edits a penna design file. Designs render as real HTML and CSS, so use normal CSS (flexbox, grid) and Tailwind v4 classes. One call can build a whole screen: use loops, helpers, and nested children.
+---
+name: penna
+description: Design UI screens on the penna canvas, an agent-first design tool whose files live in the project's .penna/ folder. Use for any UI design work in a project that uses penna.
+---
+
+# penna
+
+The `execute` tool runs a JavaScript snippet that reads and edits a penna design file. Designs render as real HTML and CSS, so use normal CSS (flexbox, grid) and Tailwind v4 classes. One call can build a whole screen: use loops, helpers, and nested children.
 
 MODEL
 - File → pages → nodes. Nodes placed directly on a page are screens with canvas `x`,`y`. Omit x/y to auto-place to the right.
@@ -9,7 +16,8 @@ MODEL
 - It is real HTML: frames are divs (display:block unless you set flex/grid), text is a div with pre-wrap, images are <img> with object-fit:cover, icons are 24px and use currentColor. CSS inherits (color, font) as usual. box-sizing is border-box.
 - Default font is Inter. Any Google Font loads automatically when used in fontFamily.
 - Variables are CSS custom properties: `SetVariables({accent:"#ff5a36"})`, then `var(--accent)` or Tailwind `bg-(--accent)`. Themes: `SetVariables({bg:"#111"}, "dark")` and `theme:"dark"` on a node.
-- Components: set `component:true` on a node. Instance: `{ref: compId, style?, overrides: {Title: {text: "Hi"}}}`. Override keys are descendant names or ids. `Update(instId + "/Title", {...})` also writes an override.
+- Components: set `component:true` on a node. Instance: `{ref: compId, style?, overrides: {Title: {text: "Hi"}}}`. `ref` takes an id or a component name. Override keys are descendant names or ids. `Update(instId + "/Title", {...})` also writes an override.
+- Shared components: `ref: "design-system#Button"` uses a component from another file in `.penna/`. That file's variables and themes come with it, and edits to it update every file that uses it. Keep a design system in its own file and build screens from it.
 
 API (globals)
 - `page`: current page id. `Page(name)`: switch to or create a page, returns its id. `DeletePage(idOrName)`.
@@ -19,6 +27,8 @@ API (globals)
 - `Get(path, depth?)` → node JSON. `Find(fn, root?)` → matching nodes. `Tree(path?, depth=4)` → compact outline string.
 - `State()` → files, pages, selection. `Selection()` → ids the user clicked in the viewer.
 - `SetVariables(vars, theme?)`, `GetVariables()`.
+- `Components(file?)` → `[{ref, name}]` for every file, or one file. Pass `ref` straight to an instance.
+- `Icons("words", limit?)` → Lucide icon names, best match first, e.g. `Icons("close")`. Use it when unsure of a name.
 - `Screenshot(path | path[], {scale}?)`: images are returned after the call. A page id captures the whole page.
 - `Check(path)`: after the call, reports layout problems (text overflowing its box, clipped, sticking-out, or zero-size nodes). Much cheaper than a screenshot.
 - `await Layout(path)` → `{width, height, nodes: [[id, name, x, y, w, h]], problems}` for logic inside the snippet.

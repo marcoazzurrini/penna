@@ -15,7 +15,7 @@ Usage:
   penna mcp                          Run the MCP server (stdio) for agents
   penna exec [-f FILE] [CODE | -]    Run a snippet (reads stdin when CODE is - or missing)
   penna init                         Create .penna/ and print agent setup
-  penna guide                        Print the agent API guide
+  penna skill                        Print the agent skill (SKILL.md)
 `;
 
 async function main() {
@@ -87,8 +87,9 @@ Or any MCP client: command "npx", args ["-y", "@marcoazzurrini/penna", "mcp"], r
 Then run "npx @marcoazzurrini/penna" to open the viewer.`);
       return;
     }
+    case "skill":
     case "guide":
-      process.stdout.write(fs.readFileSync(pkgPath("AGENT.md"), "utf8"));
+      process.stdout.write(fs.readFileSync(pkgPath("skill", "SKILL.md"), "utf8"));
       return;
     case "help":
     case "--help":

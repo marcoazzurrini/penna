@@ -28,7 +28,7 @@
   },
   "files": [
     "dist",
-    "AGENT.md"
+    "skill"
   ],
   "engines": {
     "node": ">=22.18"

@@ -6,6 +6,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { Executor, type ExecRequest, type ExecResult } from "./execute.ts";
 import { fontsCss } from "./fonts.ts";
 import { Headless } from "./headless.ts";
+import { withLibraries } from "./libs.ts";
 import { pkgPath, resolveDep } from "./paths.ts";
 import { Store } from "./store.ts";
 
@@ -77,13 +78,22 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
   let focus: { file: string; page: string } | null = null;
 
   store.on("files", () => broadcast(filesMsg()));
-  store.on("change", (file: string) => {
+  const docMsg = (file: string) => {
     const doc = store.get(file);
-    if (!doc) return;
-    const msg: Record<string, unknown> = { t: "doc", file, rev: store.rev(file), doc };
+    return doc ? { t: "doc", file, rev: store.rev(file), doc: withLibraries(store, file, doc).doc } : undefined;
+  };
+  store.on("change", (file: string) => {
+    const msg: Record<string, unknown> | undefined = docMsg(file);
+    if (!msg) return;
     if (focus?.file === file) msg.focus = focus.page;
     focus = null;
     broadcast(msg, file);
+    // Files that use components from this one need re-rendering too.
+    const open = new Set([...clients.values()].map((c) => c.file));
+    for (const other of open) {
+      const doc = other && other !== file ? store.get(other) : undefined;
+      if (doc && withLibraries(store, other, doc).files.has(file)) broadcast(docMsg(other)!, other);
+    }
   });
 
   const exec = (req: ExecRequest) => executor.run(req);
@@ -171,8 +181,8 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
       const file = msg.file ?? "";
       if (msg.t === "open") {
         clients.get(ws)!.file = file;
-        const doc = store.get(file);
-        if (doc) ws.send(JSON.stringify({ t: "doc", file, rev: store.rev(file), doc }));
+        const msg = docMsg(file);
+        if (msg) ws.send(JSON.stringify(msg));
       } else if (msg.t === "view" && msg.page) {
         clients.get(ws)!.file = file;
         store.viewing = { file, page: msg.page };

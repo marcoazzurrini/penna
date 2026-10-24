@@ -32,7 +32,7 @@ export interface PennaNode {
   icon?: string;
   /** svg: raw SVG markup. */
   svg?: string;
-  /** ref: id of the component node this instance renders. */
+  /** ref: id of the component this instance renders, or `file#id` for a component in another file. */
   ref?: string;
   /** ref: per-descendant patches, keyed by descendant id or name. */
   overrides?: Record<string, NodePatch>;
@@ -63,6 +63,14 @@ export interface PennaDoc {
   /** Named variable sets that override `variables` inside nodes with a matching `theme`. */
   themes?: Record<string, Record<string, string>>;
   pages: PennaPage[];
+}
+
+/**
+ * A document ready to render: components from other files are copied into `libs`
+ * (keyed `file#id`), and their files' variables and themes are merged in.
+ */
+export interface RenderDoc extends PennaDoc {
+  libs?: Record<string, PennaNode>;
 }
 
 export function emptyDoc(): PennaDoc {

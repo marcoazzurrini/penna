@@ -1,9 +1,10 @@
-import fs from "node:fs";
 import vm from "node:vm";
 import { camel } from "../shared/style.ts";
-import { applyPatch, expandRef, findDescendant, indexDoc, type Located } from "../shared/tree.ts";
-import type { NodePatch, NodeType, PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
+import { applyPatch, expandRef, findDescendant, indexDoc, walk, type Located } from "../shared/tree.ts";
+import type { NodePatch, NodeType, PennaDoc, PennaNode, PennaPage, RenderDoc } from "../shared/types.ts";
 import type { Headless, LayoutReport } from "./headless.ts";
+import { Icons } from "./icons.ts";
+import { findComponent, splitRef, withLibraries } from "./libs.ts";
 import type { Store } from "./store.ts";
 
 export interface Edit {
@@ -61,13 +62,13 @@ export class Executor {
 
   private store: Store;
   private headless: Headless;
-  private iconDir: string;
+  private icons: Icons;
   private url: () => string;
 
   constructor(store: Store, headless: Headless, iconDir: string, url: () => string) {
     this.store = store;
     this.headless = headless;
-    this.iconDir = iconDir;
+    this.icons = new Icons(iconDir);
     this.url = url;
   }
 
@@ -91,7 +92,7 @@ export class Executor {
 
     let session: Session;
     try {
-      session = new Session(this.store, file, this.iconDir, this.headless);
+      session = new Session(this.store, file, this.icons, this.headless);
     } catch (err) {
       return { ok: false, file, text: `Error: ${formatError(err)}`, shots: [] };
     }
@@ -102,7 +103,9 @@ export class Executor {
       const script = new vm.Script(`(async () => {\n${code}\n})()`, { filename: "snippet.js", lineOffset: -1 });
       await script.runInContext(ctx, { timeout: 5000 });
     } catch (err) {
-      return this.fail(file, req.editId, code, formatError(err), session);
+      let message = formatError(err);
+      if (message.startsWith("ReferenceError")) message += ". Globals are listed in the penna skill (read_skill tool, or `penna skill`).";
+      return this.fail(file, req.editId, code, message, session);
     }
 
     if (session.changed) {
@@ -114,15 +117,16 @@ export class Executor {
     const shots: Shot[] = [];
     if (session.shotJobs.length || session.checkJobs.length) {
       const page = session.currentPageId();
+      const doc = session.renderDoc();
       try {
         for (const job of session.shotJobs) {
           for (const id of job.ids) {
-            const png = await this.headless.screenshot(session.doc, page, id, job.scale);
+            const png = await this.headless.screenshot(doc, page, id, job.scale);
             shots.push({ id, name: session.nameOf(id), png });
           }
         }
         for (const id of session.checkJobs) {
-          const report = await this.headless.layout(session.doc, page, id);
+          const report = await this.headless.layout(doc, page, id);
           session.print(formatProblems(session.nameOf(id), report));
         }
       } catch (err) {
@@ -186,16 +190,17 @@ class Session {
   shotJobs: ShotJob[] = [];
   checkJobs: string[] = [];
   private idx: Map<string, Located> | null = null;
+  private refIdx: Map<string, Located> | null = null;
   private pageId: string;
   private store: Store;
   private file: string;
-  private iconDir: string;
+  private icons: Icons;
   private headless: Headless;
 
-  constructor(store: Store, file: string, iconDir: string, headless: Headless) {
+  constructor(store: Store, file: string, icons: Icons, headless: Headless) {
     this.store = store;
     this.file = file;
-    this.iconDir = iconDir;
+    this.icons = icons;
     this.headless = headless;
     this.doc = structuredClone(store.getOrCreate(file));
     const viewing = store.viewing?.file === file ? store.viewing.page : undefined;
@@ -210,9 +215,29 @@ class Session {
     return (this.idx ??= indexDoc(this.doc));
   }
 
+  /** Like index(), plus components used from other files, keyed `file#id`. */
+  private refIndex() {
+    return (this.refIdx ??= indexDoc(this.renderDoc()));
+  }
+
+  /** The component a ref points to, in this file or another one. */
+  private refTarget(ref: string): PennaNode | undefined {
+    const hit = this.refIndex().get(ref)?.node;
+    if (hit || !ref.includes("#")) return hit;
+    const [f, id] = splitRef(ref);
+    const lib = this.store.get(f!);
+    return lib ? indexDoc(lib).get(id)?.node : undefined;
+  }
+
+  /** The document with components from other files merged in, for rendering. */
+  renderDoc(): RenderDoc {
+    return withLibraries(this.store, this.file, this.doc).doc;
+  }
+
   private dirty() {
     this.changed = true;
     this.idx = null;
+    this.refIdx = null;
   }
 
   print(line: string) {
@@ -372,6 +397,8 @@ class Session {
           if (typeof run.class === "string") out.class = run.class;
           return out;
         });
+      } else if (key === "ref") {
+        node.ref = this.normRef(v);
       } else if (key === "overrides") {
         const ov: Record<string, NodePatch> = {};
         for (const k in v as object) ov[k] = this.normPatch((v as Record<string, unknown>)[k]);
@@ -384,7 +411,7 @@ class Session {
     }
     this.check(node);
     if (track && typeof raw.name === "string") this.created.push(`${raw.name}=${node.id}`);
-    if (!node.name) node.name = defaultName(node, this.index());
+    if (!node.name) node.name = node.type === "ref" ? (this.refTarget(node.ref ?? "")?.name ?? "Instance") : defaultName(node);
     return node;
   }
 
@@ -425,11 +452,28 @@ class Session {
         const s: Record<string, unknown> = {};
         for (const sk in raw.style as object) s[camel(sk)] = (raw.style as Record<string, unknown>)[sk];
         patch.style = s;
+      } else if (k === "ref" && raw.ref) {
+        patch.ref = this.normRef(raw.ref);
       } else if (k === "children" && Array.isArray(raw.children)) {
         patch.children = raw.children.map((c) => this.normalize(c, false, true));
       } else patch[k] = raw[k];
     }
     return patch as NodePatch;
+  }
+
+  /**
+   * Resolve a ref to a stored form: a local component id, or `file#id` for another file.
+   * Accepts ids or names, e.g. "Button" or "design-system#Button".
+   */
+  private normRef(v: unknown): string {
+    if (typeof v !== "string" || !v) throw new Error(`ref must be a component id or name, or "file#Name" for another file. Got ${JSON.stringify(v)?.slice(0, 60)}.`);
+    const [f, key] = splitRef(v);
+    if (!f || f === this.file) return findComponent(this.doc, key, this.index())?.id ?? key;
+    const lib = this.store.get(f);
+    if (!lib) throw new Error(`No design file "${f}". Files: ${this.store.list().join(", ") || "none"}.`);
+    const comp = findComponent(lib, key);
+    if (!comp) throw new Error(`No component "${key}" in "${f}". Call Components("${f}") to list them.`);
+    return `${f}#${comp.id}`;
   }
 
   private check(n: PennaNode) {
@@ -438,14 +482,17 @@ class Session {
     if (n.type === "image" && !n.src) this.warn(`Image "${label}" has no src.`);
     if (n.type === "icon") {
       if (!n.icon) this.warn(`Icon "${label}" has no icon name.`);
-      else if (!fs.existsSync(`${this.iconDir}/${n.icon}.svg`)) this.warn(`Unknown Lucide icon "${n.icon}". Use kebab-case Lucide names, e.g. "arrow-right".`);
+      else if (!this.icons.has(n.icon)) {
+        const close = this.icons.search(n.icon, 6);
+        this.warn(`Unknown Lucide icon "${n.icon}".` + (close.length ? ` Close matches: ${close.join(", ")}.` : ` Find names with Icons("words").`));
+      }
     }
     if (n.type === "ref") {
       if (!n.ref) this.warn(`Instance "${label}" has no ref.`);
-      else if (!this.index().get(n.ref)?.node.component) {
-        const target = this.index().get(n.ref);
+      else if (!this.refTarget(n.ref)?.component) {
+        const target = this.refTarget(n.ref);
         if (!target) this.warn(`Instance "${label}" refers to missing component "${n.ref}".`);
-        else this.warn(`Instance "${label}" refers to "${target.node.name}", which is not marked component:true.`);
+        else this.warn(`Instance "${label}" refers to "${target.name}", which is not marked component:true.`);
       }
     }
   }
@@ -582,7 +629,7 @@ class Session {
         const t = self.resolve(path);
         if (t.kind === "page") return trim(structuredClone(t.page) as PennaPage, depth);
         if (t.kind === "node") return trim(structuredClone(t.loc.node), depth);
-        const expanded = expandRef(t.inst, self.index());
+        const expanded = expandRef(t.inst, self.refIndex());
         const hit = expanded && findDescendant(expanded, t.inst.id + "/" + t.key) ? findDescendant(expanded, t.inst.id + "/" + t.key) : expanded && findDescendant(expanded, t.key);
         if (!hit) throw new Error(`No "${t.key}" inside instance "${t.inst.name ?? t.inst.id}".`);
         return trim(structuredClone(hit), depth);
@@ -608,7 +655,7 @@ class Session {
         const line = (n: PennaNode, d: number) => {
           let s = "  ".repeat(d) + (n.name ?? "") + " " + n.id + " " + n.type;
           if (n.component) s += " component";
-          if (n.type === "ref") s += "→" + (self.index().get(n.ref!)?.node.name ?? n.ref);
+          if (n.type === "ref") s += "→" + (n.ref!.includes("#") ? n.ref!.split("#")[0] + "#" : "") + (self.refTarget(n.ref!)?.name ?? n.ref);
           if (n.type === "text") s += " " + JSON.stringify(truncate(n.text ?? n.spans?.map((r) => r.text).join("") ?? "", 40));
           if (n.type === "icon") s += " " + n.icon;
           if (n.x !== undefined) s += ` @${n.x},${n.y}`;
@@ -676,6 +723,26 @@ class Session {
         self.dirty();
       },
 
+      Components(file?: string): { ref: string; name: string }[] {
+        const files = file ? [file] : [self.file, ...self.store.list().filter((f) => f !== self.file)];
+        const out: { ref: string; name: string }[] = [];
+        for (const f of files) {
+          const d = f === self.file ? self.doc : self.store.get(f);
+          if (!d) throw new Error(`No design file "${f}". Files: ${self.store.list().join(", ") || "none"}.`);
+          for (const p of d.pages) {
+            walk(p.children, (n) => {
+              if (n.component) out.push({ ref: f === self.file ? n.id : `${f}#${n.id}`, name: n.name ?? n.id });
+            });
+          }
+        }
+        return out;
+      },
+
+      Icons(query: string, limit?: number): string[] {
+        if (typeof query !== "string") throw new Error('Icons("words", limit?) needs a search string.');
+        return self.icons.search(query, limit);
+      },
+
       GetVariables() {
         return { variables: { ...(self.doc.variables ?? {}) }, themes: structuredClone(self.doc.themes ?? {}) };
       },
@@ -695,7 +762,7 @@ class Session {
 
       async Layout(path: string) {
         const loc = self.resolveNode(path, "Layout");
-        return self.headless.layout(self.doc, self.pageId, loc.node.id);
+        return self.headless.layout(self.renderDoc(), self.pageId, loc.node.id);
       },
     };
   }
@@ -711,14 +778,12 @@ function inferType(raw: Record<string, unknown>): NodeType {
   return "frame";
 }
 
-function defaultName(n: PennaNode, idx: Map<string, Located>): string {
+function defaultName(n: PennaNode): string {
   switch (n.type) {
     case "text":
       return truncate(n.text ?? n.spans?.map((s) => s.text).join("") ?? "Text", 24);
     case "icon":
       return n.icon ?? "Icon";
-    case "ref":
-      return idx.get(n.ref ?? "")?.node.name ?? "Instance";
     case "image":
       return "Image";
     case "svg":

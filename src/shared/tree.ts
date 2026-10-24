@@ -1,4 +1,4 @@
-import type { NodePatch, PennaDoc, PennaNode, PennaPage } from "./types.ts";
+import type { NodePatch, PennaNode, PennaPage, RenderDoc } from "./types.ts";
 
 export interface Located {
   node: PennaNode;
@@ -10,14 +10,18 @@ export function isPage(x: PennaNode | PennaPage): x is PennaPage {
   return !("type" in x);
 }
 
-/** Map of every node id in the document to its location. */
-export function indexDoc(doc: PennaDoc): Map<string, Located> {
+/** Map of every node id in the document to its location. Library components are keyed `file#id`. */
+export function indexDoc(doc: RenderDoc): Map<string, Located> {
   const map = new Map<string, Located>();
   const visit = (node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage) => {
     map.set(node.id, { node, parent, page });
     if (node.children) for (const c of node.children) visit(c, node, page);
   };
   for (const page of doc.pages) for (const n of page.children) visit(n, page, page);
+  for (const key in doc.libs ?? {}) {
+    const page: PennaPage = { id: "", name: key.split("#")[0], children: [] };
+    map.set(key, { node: doc.libs![key], parent: page, page });
+  }
   return map;
 }
 

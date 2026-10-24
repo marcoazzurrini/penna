@@ -1,6 +1,6 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc, refsUsed, type Located } from "../shared/tree.ts";
-import type { PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
+import type { PennaNode, PennaPage, RenderDoc } from "../shared/types.ts";
 import { startHeadless } from "./headless.ts";
 import { fontFamilies, loadFonts, renderNode } from "./render.ts";
 
@@ -19,7 +19,7 @@ interface Rendered {
 
 type ServerMsg =
   | { t: "files"; files: string[]; root: string }
-  | { t: "doc"; file: string; rev: number; doc: PennaDoc; focus?: string };
+  | { t: "doc"; file: string; rev: number; doc: RenderDoc; focus?: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,7 +41,7 @@ function startViewer() {
   let ws: WebSocket | null = null;
   let files: string[] = [];
   let file = localStorage.getItem("penna:file") ?? "";
-  let doc: PennaDoc | null = null;
+  let doc: RenderDoc | null = null;
   let index = new Map<string, Located>();
   let pageId = "";
   let selected: string | null = null;
