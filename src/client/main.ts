@@ -1,6 +1,6 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc, refsUsed, type Located } from "../shared/tree.ts";
-import type { PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
+import type { PennaNode, PennaPage, PennaDoc } from "../shared/types.ts";
 import { startHeadless } from "./headless.ts";
 import { fontFamilies, loadFonts, renderNode } from "./render.ts";
 
@@ -17,9 +17,7 @@ interface Rendered {
   node: PennaNode;
 }
 
-type ServerMsg =
-  | { t: "files"; files: string[]; root: string }
-  | { t: "doc"; file: string; rev: number; doc: PennaDoc; focus?: string };
+type ServerMsg = { t: "doc"; project: string; rev: number; doc: PennaDoc; focus?: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -29,7 +27,7 @@ function startViewer() {
   const labels = $<HTMLElement>("labels");
   const hoverBox = $<HTMLElement>("hover-box");
   const selectBox = $<HTMLElement>("select-box");
-  const fileSelect = $<HTMLSelectElement>("file-select");
+  const projectEl = $<HTMLElement>("project");
   const pagesEl = $<HTMLUListElement>("pages");
   const layersEl = $<HTMLElement>("layers");
   const info = $<HTMLElement>("info");
@@ -39,8 +37,9 @@ function startViewer() {
   const follow = $<HTMLInputElement>("follow");
 
   let ws: WebSocket | null = null;
-  let files: string[] = [];
-  let file = localStorage.getItem("penna:file") ?? "";
+  // localStorage is shared by every project served on this port, so keys include the project.
+  let project = "";
+  const key = (k: string) => `penna:${project}:${k}`;
   let doc: PennaDoc | null = null;
   let index = new Map<string, Located>();
   let pageId = "";
@@ -54,6 +53,26 @@ function startViewer() {
   follow.checked = localStorage.getItem("penna:follow") !== "0";
   follow.onchange = () => localStorage.setItem("penna:follow", follow.checked ? "1" : "0");
 
+  // Theme: follow the system, or force light or dark. The choice applies to every project.
+  const THEMES = ["system", "light", "dark"] as const;
+  const THEME_ICON = { system: "sun-moon", light: "sun", dark: "moon" };
+  const themeBtn = $<HTMLButtonElement>("theme");
+  const showTheme = () => {
+    const t = (document.documentElement.dataset.theme ?? "system") as (typeof THEMES)[number];
+    (themeBtn.firstElementChild as HTMLElement).style.setProperty("--i", `url(/icon/${THEME_ICON[t]}.svg)`);
+    const label = `Theme: ${t[0].toUpperCase() + t.slice(1)}`;
+    themeBtn.lastElementChild!.textContent = label;
+    themeBtn.title = "Switch theme";
+  };
+  themeBtn.onclick = () => {
+    const cur = THEMES.indexOf((document.documentElement.dataset.theme ?? "system") as (typeof THEMES)[number]);
+    const next = THEMES[(cur + 1) % THEMES.length];
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("penna:theme", next);
+    showTheme();
+  };
+  showTheme();
+
   // ---------- Connection ----------
 
   function connect() {
@@ -61,7 +80,6 @@ function startViewer() {
     ws.onopen = () => {
       statusEl.className = "";
       statusEl.title = "Connected";
-      if (file) send({ t: "open", file });
     };
     ws.onclose = () => {
       statusEl.className = "off";
@@ -76,38 +94,20 @@ function startViewer() {
   }
 
   function onMessage(msg: ServerMsg) {
-    if (msg.t === "files") {
-      files = msg.files;
-      document.title = `penna · ${msg.root.split("/").pop()}`;
-      if (!files.includes(file)) openFile(files[0] ?? "");
-      renderFileSelect();
-      updateEmpty();
-      return;
-    }
     if (msg.t === "doc") {
-      if (msg.file !== file) {
-        if (!msg.focus || !follow.checked) return;
-        file = msg.file;
-        localStorage.setItem("penna:file", file);
-        renderFileSelect();
+      if (msg.project !== project) {
+        project = msg.project;
+        projectEl.textContent = project;
+        document.title = `penna · ${project}`;
       }
       const first = !doc;
       doc = msg.doc;
       index = indexDoc(doc);
       if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
-      if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(`penna:page:${file}`) ?? "";
+      if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(key("page")) ?? "";
       if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
       renderDoc(first);
     }
-  }
-
-  function openFile(name: string) {
-    if (name === file && doc) return;
-    file = name;
-    doc = null;
-    localStorage.setItem("penna:file", file);
-    clearCanvas();
-    if (file) send({ t: "open", file });
   }
 
   // ---------- Rendering ----------
@@ -131,8 +131,8 @@ function startViewer() {
     if (pageChanged) {
       clearCanvas();
       lastPage = pg?.id ?? "";
-      localStorage.setItem(`penna:page:${file}`, lastPage);
-      send({ t: "view", file, page: lastPage });
+      localStorage.setItem(key("page"), lastPage);
+      send({ t: "view", page: lastPage });
     }
     world.style.cssText = variablesToCss(doc.variables) + world.style.cssText.replace(/--[^;]+;/g, "");
     void loadFonts(fontFamilies(doc));
@@ -180,7 +180,7 @@ function startViewer() {
         r.el.classList.add("cv");
       }
       // The server uses real sizes to auto-place new screens without overlap.
-      send({ t: "sizes", file, sizes: Object.fromEntries([...sizes].map(([id, s]) => [id, [s.w, s.h]])) });
+      send({ t: "sizes", sizes: Object.fromEntries([...sizes].map(([id, s]) => [id, [s.w, s.h]])) });
       if (first || pageChanged) restoreCamera();
       else updateOverlay();
     });
@@ -193,7 +193,7 @@ function startViewer() {
   }
 
   function updateEmpty() {
-    const msg = !files.length ? "No designs yet." : doc && !page()?.children.length ? "This page is empty." : "";
+    const msg = !doc ? "" : !doc.pages.some((p) => p.children.length) ? "No designs yet." : !page()?.children.length ? "This page is empty." : "";
     empty.hidden = !msg;
     if (msg) empty.firstElementChild!.textContent = msg;
   }
@@ -209,37 +209,47 @@ function startViewer() {
 
   // ---------- Sidebar ----------
 
-  function renderFileSelect() {
-    fileSelect.textContent = "";
-    for (const f of files) {
-      const o = document.createElement("option");
-      o.value = f;
-      o.textContent = f;
-      o.selected = f === file;
-      fileSelect.appendChild(o);
-    }
-    fileSelect.disabled = files.length === 0;
-  }
-  fileSelect.onchange = () => openFile(fileSelect.value);
 
   function renderPages() {
     pagesEl.textContent = "";
     for (const p of doc?.pages ?? []) {
       const li = document.createElement("li");
-      li.textContent = p.name;
-      li.className = p.id === pageId ? "active" : "";
-      li.onclick = () => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = p.id === pageId ? "row active" : "row";
+      if (p.id === pageId) btn.setAttribute("aria-current", "page");
+      btn.innerHTML = `<span class="lname"></span><span class="count"></span>`;
+      btn.firstElementChild!.textContent = p.name;
+      btn.lastElementChild!.textContent = p.children.length ? String(p.children.length) : "";
+      btn.onclick = () => {
         if (p.id === pageId) return;
         saveCamera();
         pageId = p.id;
         selected = null;
         renderDoc(false);
       };
+      li.appendChild(btn);
       pagesEl.appendChild(li);
     }
   }
 
-  const KIND: Record<string, string> = { frame: "▢", text: "T", image: "▣", icon: "★", svg: "✎", ref: "◇" };
+  const KIND: Record<string, string> = { text: "type", image: "image", icon: "shapes", svg: "spline", ref: "diamond" };
+  const icon = (name: string, cls = "") => `<i class="ico ${cls}" style="--i:url(/icon/${name}.svg)"></i>`;
+
+  /** Lucide icon for a layer row. Frames show their layout, like Figma's auto layout icons. */
+  function kindIcon(n: PennaNode, depth: number): string {
+    if (n.component) return "component";
+    if (n.type !== "frame") return KIND[n.type] ?? "square-dashed";
+    if (depth === 0) return "frame";
+    const display = String(n.style?.display ?? "");
+    const cls = ` ${n.class ?? ""} `;
+    if (display === "grid" || / grid /.test(cls)) return "layout-grid";
+    if (display === "flex" || / flex /.test(cls)) {
+      const column = String(n.style?.flexDirection ?? "").startsWith("column") || / flex-col /.test(cls);
+      return column ? "rows-3" : "columns-3";
+    }
+    return "square-dashed";
+  }
 
   function renderLayers() {
     layersEl.textContent = "";
@@ -259,12 +269,13 @@ function startViewer() {
       if (n.type === "ref") div.classList.add("instance");
       // Parts of an instance aren't listed, so highlight the instance itself.
       if (selected && (n.id === selected || n.id === selected.split("/")[0])) div.classList.add("selected");
-      div.style.paddingLeft = 8 + depth * 12 + "px";
+      div.style.paddingInlineStart = 4 + depth * 14 + "px";
       const hasKids = !!n.children?.length;
       const open = expanded.has(n.id);
-      div.innerHTML = `<span class="twisty">${hasKids ? (open ? "▾" : "▸") : ""}</span><span class="kind">${n.component ? "❖" : KIND[n.type] ?? ""}</span><span class="lname"></span>`;
+      if (open) div.classList.add("open");
+      div.innerHTML = `<span class="twisty">${hasKids ? icon("chevron-right") : ""}</span>${icon(kindIcon(n, depth), "kind")}<span class="lname"></span>`;
       div.querySelector(".lname")!.textContent = n.name ?? n.id;
-      if (n.hidden) div.style.opacity = "0.45";
+      if (n.hidden) div.classList.add("hidden-node");
       div.querySelector(".twisty")!.addEventListener("click", (e) => {
         e.stopPropagation();
         if (open) expanded.delete(n.id);
@@ -307,11 +318,11 @@ function startViewer() {
   }
 
   function saveCamera() {
-    if (file && pageId) localStorage.setItem(`penna:cam:${file}:${pageId}`, JSON.stringify(cam));
+    if (pageId) localStorage.setItem(key(`cam:${pageId}`), JSON.stringify(cam));
   }
 
   function restoreCamera() {
-    const saved = localStorage.getItem(`penna:cam:${file}:${pageId}`);
+    const saved = localStorage.getItem(key(`cam:${pageId}`));
     if (saved) {
       cam = JSON.parse(saved);
       applyCamera();
@@ -452,7 +463,7 @@ function startViewer() {
 
   function select(id: string | null, fromLayers: boolean) {
     selected = id;
-    send({ t: "select", file, page: pageId, ids: id ? [id] : [] });
+    send({ t: "select", page: pageId, ids: id ? [id] : [] });
     if (fromLayers && id) {
       const el = world.querySelector(`[data-id="${CSS.escape(id)}"]`);
       const v = viewport.getBoundingClientRect();
@@ -515,7 +526,7 @@ function startViewer() {
     else if (e.shiftKey && e.code === "Digit2" && selected) zoomTo(selected);
     else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      send({ t: e.shiftKey ? "redo" : "undo", file });
+      send({ t: e.shiftKey ? "redo" : "undo" });
     } else if (mod && (e.key === "=" || e.key === "+")) {
       e.preventDefault();
       zoomAt(1.25, viewport.clientWidth / 2, viewport.clientHeight / 2);

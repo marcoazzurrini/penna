@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>penna</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Apply the saved theme before first paint, so there is no flash. -->
+    <script>document.documentElement.dataset.theme = localStorage.getItem("penna:theme") || "system";</script>
     <script src="/vendor/tailwind.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -11,8 +15,8 @@
     <div id="app">
       <aside id="side">
         <header id="side-head">
-          <span class="logo">penna</span>
-          <select id="file-select" title="Design file"></select>
+          <span class="logo" role="img" aria-label="penna" title="penna"><svg class="mark" viewBox="0 0 100 100" aria-hidden="true"><defs><mask id="pn-nib"><rect width="100" height="100" fill="#fff"/><path fill="#000" d="M38 21 H62 Q66 21 66 25 V43 C66 56 58 64 50 80 C42 64 34 56 34 43 V25 Q34 21 38 21 Z"/><circle cx="50" cy="45" r="5.5" fill="#fff"/><rect x="48.4" y="49" width="3.2" height="25" rx="1.6" fill="#fff"/></mask></defs><rect mask="url(#pn-nib)" x="8" y="8" width="84" height="84" rx="23" fill="currentColor"/></svg></span>
+          <span id="project" title="Project"></span>
         </header>
         <section class="panel">
           <h2>Pages</h2>
@@ -22,6 +26,9 @@
           <h2>Layers</h2>
           <div id="layers"></div>
         </section>
+        <footer id="side-foot">
+          <button id="theme" type="button" class="row"><i class="ico"></i><span class="lname"></span></button>
+        </footer>
       </aside>
       <main id="viewport">
         <div id="world" class="pn-root"></div>
@@ -30,7 +37,7 @@
         <div id="select-box" class="box"></div>
         <div id="empty" hidden>
           <p>No designs yet.</p>
-          <p class="muted">Ask your agent to create one. Files live in <code>.penna/</code>.</p>
+          <p class="muted">Ask your agent to create one. Designs live in <code>.penna/</code>.</p>
         </div>
         <footer id="hud">
           <div id="info"></div>

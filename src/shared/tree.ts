@@ -109,3 +109,19 @@ export function refsUsed(node: PennaNode, index: Map<string, Located>, out = new
   });
   return out;
 }
+
+/** Find a component by id or name, preferring nodes marked as components. */
+export function findComponent(doc: PennaDoc, key: string, index?: Map<string, Located>): PennaNode | undefined {
+  const byId = (index ?? indexDoc(doc)).get(key)?.node;
+  if (byId) return byId;
+  let comp: PennaNode | undefined;
+  let other: PennaNode | undefined;
+  for (const p of doc.pages) {
+    walk(p.children, (n) => {
+      if (n.name !== key) return;
+      if (n.component) comp ??= n;
+      else other ??= n;
+    });
+  }
+  return comp ?? other;
+}

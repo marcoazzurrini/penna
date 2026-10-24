@@ -13,9 +13,9 @@ const HELP = `penna: an agent-first design canvas that lives in your repo.
 Usage:
   penna [dev] [--port N] [--open]   Start the viewer for this project
   penna mcp                          Run the MCP server (stdio) for agents
-  penna exec [-f FILE] [CODE | -]    Run a snippet (reads stdin when CODE is - or missing)
+  penna exec [CODE | -]              Run a snippet (reads stdin when CODE is - or missing)
   penna init                         Create .penna/ and print agent setup
-  penna guide                        Print the agent API guide
+  penna skill                        Print the agent skill (SKILL.md)
 `;
 
 async function main() {
@@ -44,7 +44,7 @@ async function main() {
       const server = await startServer(root, port);
       if (!quiet) {
         console.log(`penna  ${server.info.url}`);
-        console.log(`       ${path.relative(process.cwd(), server.store.dir) || ".penna"}/ · ${server.store.list().length} file(s)`);
+        console.log(`       ${path.relative(process.cwd(), server.store.dir) || ".penna"}/ · ${server.store.get().pages.length} page(s)`);
       }
       if (open) openBrowser(server.info.url);
       const stop = async () => {
@@ -58,12 +58,11 @@ async function main() {
     case "mcp":
       return runMcp(root);
     case "exec": {
-      const file = flag("-f") ?? flag("--file");
       let code = args.join(" ");
       if (!code || code === "-") code = fs.readFileSync(0, "utf8");
       if (!(await findServer(root))) await spawnServer(root);
       const client = new ExecClient(root);
-      const r = await client.exec({ code, file });
+      const r = await client.exec({ code });
       console.log(r.text);
       if (r.shots.length) {
         const dir = path.join(root, ".penna", ".shots");
@@ -87,8 +86,9 @@ Or any MCP client: command "npx", args ["-y", "@marcoazzurrini/penna", "mcp"], r
 Then run "npx @marcoazzurrini/penna" to open the viewer.`);
       return;
     }
+    case "skill":
     case "guide":
-      process.stdout.write(fs.readFileSync(pkgPath("AGENT.md"), "utf8"));
+      process.stdout.write(fs.readFileSync(pkgPath("skill", "SKILL.md"), "utf8"));
       return;
     case "help":
     case "--help":

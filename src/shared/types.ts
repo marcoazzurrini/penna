@@ -1,4 +1,4 @@
-// The on-disk document format. Everything is plain JSON so files diff well in git.
+// The design format. Everything is plain JSON so files diff well in git.
 
 export type NodeType = "frame" | "text" | "image" | "icon" | "svg" | "ref";
 
@@ -32,7 +32,7 @@ export interface PennaNode {
   icon?: string;
   /** svg: raw SVG markup. */
   svg?: string;
-  /** ref: id of the component node this instance renders. */
+  /** ref: id of the component node this instance renders. It may live on any page. */
   ref?: string;
   /** ref: per-descendant patches, keyed by descendant id or name. */
   overrides?: Record<string, NodePatch>;
@@ -56,8 +56,9 @@ export interface PennaPage {
   children: PennaNode[];
 }
 
+/** The whole project as agents and the viewer see it. */
 export interface PennaDoc {
-  version: 1;
+  version: 2;
   /** CSS custom properties, without the leading `--`. */
   variables?: Record<string, string>;
   /** Named variable sets that override `variables` inside nodes with a matching `theme`. */
@@ -65,6 +66,22 @@ export interface PennaDoc {
   pages: PennaPage[];
 }
 
+/** `.penna/project.json`: variables, themes, and page order. */
+export interface ProjectFile {
+  version: 2;
+  /** Page ids in display order. Page files missing here are shown after these. */
+  pages: string[];
+  variables?: Record<string, string>;
+  themes?: Record<string, Record<string, string>>;
+}
+
+/** `.penna/pages/<id>.json`: one page. The file name is the page id. */
+export interface PageFile {
+  version: 2;
+  name: string;
+  children: PennaNode[];
+}
+
 export function emptyDoc(): PennaDoc {
-  return { version: 1, variables: {}, pages: [{ id: "page1", name: "Page 1", children: [] }] };
+  return { version: 2, variables: {}, pages: [{ id: "page-1", name: "Page 1", children: [] }] };
 }
