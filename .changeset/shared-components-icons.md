@@ -11,3 +11,4 @@ One project, many pages. Plus icon search and an on-demand agent skill.
 - New `Components()` lists every component in the project.
 - New `Icons("words")` searches Lucide icons by name and tag, including old names such as "home". Unknown icon warnings now suggest close matches.
 - The agent guide is now an Agent Skill (`skill/SKILL.md`) that loads on demand. `execute` has a short description, a new `read_skill` MCP tool returns the skill, and server instructions tell agents when to use penna. `penna guide` is now `penna skill`.
+- The viewer has a new logo, a polished sidebar with Lucide layer icons and page screen counts, and a theme switch (System, Light, Dark) at the bottom of the sidebar.

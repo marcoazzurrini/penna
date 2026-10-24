@@ -53,6 +53,26 @@ function startViewer() {
   follow.checked = localStorage.getItem("penna:follow") !== "0";
   follow.onchange = () => localStorage.setItem("penna:follow", follow.checked ? "1" : "0");
 
+  // Theme: follow the system, or force light or dark. The choice applies to every project.
+  const THEMES = ["system", "light", "dark"] as const;
+  const THEME_ICON = { system: "sun-moon", light: "sun", dark: "moon" };
+  const themeBtn = $<HTMLButtonElement>("theme");
+  const showTheme = () => {
+    const t = (document.documentElement.dataset.theme ?? "system") as (typeof THEMES)[number];
+    (themeBtn.firstElementChild as HTMLElement).style.setProperty("--i", `url(/icon/${THEME_ICON[t]}.svg)`);
+    const label = `Theme: ${t[0].toUpperCase() + t.slice(1)}`;
+    themeBtn.lastElementChild!.textContent = label;
+    themeBtn.title = "Switch theme";
+  };
+  themeBtn.onclick = () => {
+    const cur = THEMES.indexOf((document.documentElement.dataset.theme ?? "system") as (typeof THEMES)[number]);
+    const next = THEMES[(cur + 1) % THEMES.length];
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("penna:theme", next);
+    showTheme();
+  };
+  showTheme();
+
   // ---------- Connection ----------
 
   function connect() {

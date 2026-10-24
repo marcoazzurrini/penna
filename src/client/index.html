@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>penna</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Apply the saved theme before first paint, so there is no flash. -->
+    <script>document.documentElement.dataset.theme = localStorage.getItem("penna:theme") || "system";</script>
     <script src="/vendor/tailwind.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -23,6 +26,9 @@
           <h2>Layers</h2>
           <div id="layers"></div>
         </section>
+        <footer id="side-foot">
+          <button id="theme" type="button" class="row"><i class="ico"></i><span class="lname"></span></button>
+        </footer>
       </aside>
       <main id="viewport">
         <div id="world" class="pn-root"></div>
