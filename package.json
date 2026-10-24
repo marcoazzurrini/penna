@@ -1,6 +1,6 @@
 {
   "name": "@marcoazzurrini/penna",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent-first design canvas that lives in your repo. Designs are JSON in .penna/, rendered as real HTML/CSS in a localhost viewer, edited by AI agents through one execute tool.",
   "keywords": [
     "design",
