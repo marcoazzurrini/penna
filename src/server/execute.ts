@@ -1,11 +1,10 @@
 import vm from "node:vm";
 import { camel } from "../shared/style.ts";
-import { applyPatch, expandRef, findDescendant, indexDoc, walk, type Located } from "../shared/tree.ts";
-import type { NodePatch, NodeType, PennaDoc, PennaNode, PennaPage, RenderDoc } from "../shared/types.ts";
+import { applyPatch, expandRef, findComponent, findDescendant, indexDoc, walk, type Located } from "../shared/tree.ts";
+import type { NodePatch, NodeType, PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
 import type { Headless, LayoutReport } from "./headless.ts";
 import { Icons } from "./icons.ts";
-import { findComponent, splitRef, withLibraries } from "./libs.ts";
-import type { Store } from "./store.ts";
+import { pageSlug, type Store } from "./store.ts";
 
 export interface Edit {
   find: string;
@@ -14,7 +13,6 @@ export interface Edit {
 }
 
 export interface ExecRequest {
-  file?: string;
   code?: string;
   editId?: string;
   edits?: Edit[];
@@ -28,7 +26,6 @@ export interface Shot {
 
 export interface ExecResult {
   ok: boolean;
-  file: string;
   /** Print output, created ids, warnings, and errors, ready to show the agent. */
   text: string;
   editId?: string;
@@ -56,9 +53,10 @@ interface ShotJob {
 /** Runs agent snippets against a working copy of a document and commits on success. */
 export class Executor {
   private failed = new Map<string, string>();
-  private contexts = new Map<string, vm.Context>();
+  /** Globals assigned by snippets persist here between calls. */
+  private ctx = vm.createContext({});
   /** Called just before a change is committed, with the page the snippet worked on. */
-  onCommit?: (file: string, page: string) => void;
+  onCommit?: (page: string) => void;
 
   private store: Store;
   private headless: Headless;
@@ -73,30 +71,24 @@ export class Executor {
   }
 
   async run(req: ExecRequest): Promise<ExecResult> {
-    const file = req.file || this.store.defaultFile();
     let code = req.code ?? "";
     if (req.editId) {
       const prev = this.failed.get(req.editId);
       if (prev === undefined) {
-        return { ok: false, file, text: `Unknown editId "${req.editId}". Send the full snippet as code instead.`, shots: [] };
+        return { ok: false, text: `Unknown editId "${req.editId}". Send the full snippet as code instead.`, shots: [] };
       }
       code = prev;
       for (const e of req.edits ?? []) {
         const count = code.split(e.find).length - 1;
-        if (count === 0) return this.fail(file, req.editId, code, `Edit failed: text not found: ${JSON.stringify(e.find.slice(0, 80))}`);
-        if (count > 1 && !e.all) return this.fail(file, req.editId, code, `Edit failed: text found ${count} times; make it unique or set all:true: ${JSON.stringify(e.find.slice(0, 80))}`);
+        if (count === 0) return this.fail(req.editId, code, `Edit failed: text not found: ${JSON.stringify(e.find.slice(0, 80))}`);
+        if (count > 1 && !e.all) return this.fail(req.editId, code, `Edit failed: text found ${count} times; make it unique or set all:true: ${JSON.stringify(e.find.slice(0, 80))}`);
         code = e.all ? code.split(e.find).join(e.replace) : code.replace(e.find, () => e.replace);
       }
     }
-    if (!code.trim()) return { ok: false, file, text: "Empty snippet.", shots: [] };
+    if (!code.trim()) return { ok: false, text: "Empty snippet.", shots: [] };
 
-    let session: Session;
-    try {
-      session = new Session(this.store, file, this.icons, this.headless);
-    } catch (err) {
-      return { ok: false, file, text: `Error: ${formatError(err)}`, shots: [] };
-    }
-    const ctx = this.context(file);
+    const session = new Session(this.store, this.icons, this.headless);
+    const ctx = this.ctx;
     // Copy descriptors, not values, so getters like `page` stay live.
     Object.defineProperties(ctx, { ...Object.getOwnPropertyDescriptors(session.api()), page: { get: () => session.currentPageId(), configurable: true } });
     try {
@@ -105,19 +97,19 @@ export class Executor {
     } catch (err) {
       let message = formatError(err);
       if (message.startsWith("ReferenceError")) message += ". Globals are listed in the penna skill (read_skill tool, or `penna skill`).";
-      return this.fail(file, req.editId, code, message, session);
+      return this.fail(req.editId, code, message, session);
     }
 
     if (session.changed) {
-      this.onCommit?.(file, session.currentPageId());
-      this.store.commit(file, session.doc);
+      this.onCommit?.(session.currentPageId());
+      this.store.commit(session.doc);
     }
     if (req.editId) this.failed.delete(req.editId);
 
     const shots: Shot[] = [];
     if (session.shotJobs.length || session.checkJobs.length) {
       const page = session.currentPageId();
-      const doc = session.renderDoc();
+      const doc = session.doc;
       try {
         for (const job of session.shotJobs) {
           for (const id of job.ids) {
@@ -133,26 +125,16 @@ export class Executor {
         session.warn(`Rendering failed: ${(err as Error).message}`);
       }
     }
-    return { ok: true, file, text: session.summary(this.url()), shots };
+    return { ok: true, text: session.summary(this.url()), shots };
   }
 
-  private context(file: string): vm.Context {
-    let ctx = this.contexts.get(file);
-    if (!ctx) {
-      ctx = vm.createContext({});
-      this.contexts.set(file, ctx);
-    }
-    return ctx;
-  }
-
-  private fail(file: string, editId: string | undefined, code: string, message: string, session?: Session): ExecResult {
+  private fail(editId: string | undefined, code: string, message: string, session?: Session): ExecResult {
     const id = editId ?? randomId(6);
     this.failed.set(id, code);
     if (this.failed.size > 50) this.failed.delete(this.failed.keys().next().value!);
     const out = session?.outputLines.length ? "\nOutput before the error:\n" + session.outputLines.join("\n") : "";
     return {
       ok: false,
-      file,
       editId: id,
       text: `Error: ${message}\nNothing was changed. Fix it by calling execute with editId "${id}" and edits.${out}`,
       shots: [],
@@ -190,21 +172,17 @@ class Session {
   shotJobs: ShotJob[] = [];
   checkJobs: string[] = [];
   private idx: Map<string, Located> | null = null;
-  private refIdx: Map<string, Located> | null = null;
   private pageId: string;
   private store: Store;
-  private file: string;
   private icons: Icons;
   private headless: Headless;
 
-  constructor(store: Store, file: string, icons: Icons, headless: Headless) {
+  constructor(store: Store, icons: Icons, headless: Headless) {
     this.store = store;
-    this.file = file;
     this.icons = icons;
     this.headless = headless;
-    this.doc = structuredClone(store.getOrCreate(file));
-    const viewing = store.viewing?.file === file ? store.viewing.page : undefined;
-    this.pageId = this.doc.pages.find((p) => p.id === viewing)?.id ?? this.doc.pages[0]?.id ?? this.addPage("Page 1");
+    this.doc = structuredClone(store.get());
+    this.pageId = this.doc.pages.find((p) => p.id === store.viewing)?.id ?? this.doc.pages[0]?.id ?? this.addPage("Page 1");
   }
 
   currentPageId() {
@@ -215,29 +193,9 @@ class Session {
     return (this.idx ??= indexDoc(this.doc));
   }
 
-  /** Like index(), plus components used from other files, keyed `file#id`. */
-  private refIndex() {
-    return (this.refIdx ??= indexDoc(this.renderDoc()));
-  }
-
-  /** The component a ref points to, in this file or another one. */
-  private refTarget(ref: string): PennaNode | undefined {
-    const hit = this.refIndex().get(ref)?.node;
-    if (hit || !ref.includes("#")) return hit;
-    const [f, id] = splitRef(ref);
-    const lib = this.store.get(f!);
-    return lib ? indexDoc(lib).get(id)?.node : undefined;
-  }
-
-  /** The document with components from other files merged in, for rendering. */
-  renderDoc(): RenderDoc {
-    return withLibraries(this.store, this.file, this.doc).doc;
-  }
-
   private dirty() {
     this.changed = true;
     this.idx = null;
-    this.refIdx = null;
   }
 
   print(line: string) {
@@ -266,7 +224,7 @@ class Session {
     }
     if (this.warnings.length) parts.push("Warnings:\n" + this.warnings.map((w) => "- " + w).join("\n"));
     if (!parts.length) parts.push(this.changed ? "Done." : "Done (no changes).");
-    if (this.changed) parts.push(`File: ${this.file} · View: ${url}`);
+    if (this.changed) parts.push(`View: ${url}`);
     return parts.join("\n");
   }
 
@@ -279,7 +237,7 @@ class Session {
   }
 
   private addPage(name: string): string {
-    const id = "p" + randomId(4);
+    const id = pageSlug(name, this.doc.pages.map((p) => p.id));
     this.doc.pages.push({ id, name, children: [] });
     this.dirty();
     return id;
@@ -411,7 +369,7 @@ class Session {
     }
     this.check(node);
     if (track && typeof raw.name === "string") this.created.push(`${raw.name}=${node.id}`);
-    if (!node.name) node.name = node.type === "ref" ? (this.refTarget(node.ref ?? "")?.name ?? "Instance") : defaultName(node);
+    if (!node.name) node.name = node.type === "ref" ? (this.index().get(node.ref ?? "")?.node.name ?? "Instance") : defaultName(node);
     return node;
   }
 
@@ -461,19 +419,10 @@ class Session {
     return patch as NodePatch;
   }
 
-  /**
-   * Resolve a ref to a stored form: a local component id, or `file#id` for another file.
-   * Accepts ids or names, e.g. "Button" or "design-system#Button".
-   */
+  /** Resolve a ref given as a component id or name, on any page, to the component's id. */
   private normRef(v: unknown): string {
-    if (typeof v !== "string" || !v) throw new Error(`ref must be a component id or name, or "file#Name" for another file. Got ${JSON.stringify(v)?.slice(0, 60)}.`);
-    const [f, key] = splitRef(v);
-    if (!f || f === this.file) return findComponent(this.doc, key, this.index())?.id ?? key;
-    const lib = this.store.get(f);
-    if (!lib) throw new Error(`No design file "${f}". Files: ${this.store.list().join(", ") || "none"}.`);
-    const comp = findComponent(lib, key);
-    if (!comp) throw new Error(`No component "${key}" in "${f}". Call Components("${f}") to list them.`);
-    return `${f}#${comp.id}`;
+    if (typeof v !== "string" || !v) throw new Error(`ref must be a component id or name. Got ${JSON.stringify(v)?.slice(0, 60)}.`);
+    return findComponent(this.doc, v, this.index())?.id ?? v;
   }
 
   private check(n: PennaNode) {
@@ -489,8 +438,8 @@ class Session {
     }
     if (n.type === "ref") {
       if (!n.ref) this.warn(`Instance "${label}" has no ref.`);
-      else if (!this.refTarget(n.ref)?.component) {
-        const target = this.refTarget(n.ref);
+      else if (!this.index().get(n.ref)?.node.component) {
+        const target = this.index().get(n.ref)?.node;
         if (!target) this.warn(`Instance "${label}" refers to missing component "${n.ref}".`);
         else this.warn(`Instance "${label}" refers to "${target.name}", which is not marked component:true.`);
       }
@@ -629,7 +578,7 @@ class Session {
         const t = self.resolve(path);
         if (t.kind === "page") return trim(structuredClone(t.page) as PennaPage, depth);
         if (t.kind === "node") return trim(structuredClone(t.loc.node), depth);
-        const expanded = expandRef(t.inst, self.refIndex());
+        const expanded = expandRef(t.inst, self.index());
         const hit = expanded && findDescendant(expanded, t.inst.id + "/" + t.key) ? findDescendant(expanded, t.inst.id + "/" + t.key) : expanded && findDescendant(expanded, t.key);
         if (!hit) throw new Error(`No "${t.key}" inside instance "${t.inst.name ?? t.inst.id}".`);
         return trim(structuredClone(hit), depth);
@@ -655,7 +604,7 @@ class Session {
         const line = (n: PennaNode, d: number) => {
           let s = "  ".repeat(d) + (n.name ?? "") + " " + n.id + " " + n.type;
           if (n.component) s += " component";
-          if (n.type === "ref") s += "→" + (n.ref!.includes("#") ? n.ref!.split("#")[0] + "#" : "") + (self.refTarget(n.ref!)?.name ?? n.ref);
+          if (n.type === "ref") s += "→" + (self.index().get(n.ref!)?.node.name ?? n.ref);
           if (n.type === "text") s += " " + JSON.stringify(truncate(n.text ?? n.spans?.map((r) => r.text).join("") ?? "", 40));
           if (n.type === "icon") s += " " + n.icon;
           if (n.x !== undefined) s += ` @${n.x},${n.y}`;
@@ -679,18 +628,16 @@ class Session {
 
       State() {
         return {
-          file: self.file,
-          files: self.store.list(),
           page: self.pageId,
           pages: self.doc.pages.map((p) => ({ id: p.id, name: p.name, frames: p.children.length })),
-          selection: self.store.selection?.file === self.file ? self.store.selection.ids : [],
+          selection: self.store.selection?.ids ?? [],
           variables: Object.keys(self.doc.variables ?? {}).length,
           themes: Object.keys(self.doc.themes ?? {}),
         };
       },
 
       Selection(): string[] {
-        return self.store.selection?.file === self.file ? [...self.store.selection.ids] : [];
+        return [...(self.store.selection?.ids ?? [])];
       },
 
       Page(name: string): string {
@@ -723,17 +670,12 @@ class Session {
         self.dirty();
       },
 
-      Components(file?: string): { ref: string; name: string }[] {
-        const files = file ? [file] : [self.file, ...self.store.list().filter((f) => f !== self.file)];
-        const out: { ref: string; name: string }[] = [];
-        for (const f of files) {
-          const d = f === self.file ? self.doc : self.store.get(f);
-          if (!d) throw new Error(`No design file "${f}". Files: ${self.store.list().join(", ") || "none"}.`);
-          for (const p of d.pages) {
-            walk(p.children, (n) => {
-              if (n.component) out.push({ ref: f === self.file ? n.id : `${f}#${n.id}`, name: n.name ?? n.id });
-            });
-          }
+      Components(): { id: string; name: string; page: string }[] {
+        const out: { id: string; name: string; page: string }[] = [];
+        for (const p of self.doc.pages) {
+          walk(p.children, (n) => {
+            if (n.component) out.push({ id: n.id, name: n.name ?? n.id, page: p.name });
+          });
         }
         return out;
       },
@@ -762,7 +704,7 @@ class Session {
 
       async Layout(path: string) {
         const loc = self.resolveNode(path, "Layout");
-        return self.headless.layout(self.renderDoc(), self.pageId, loc.node.id);
+        return self.headless.layout(self.doc, self.pageId, loc.node.id);
       },
     };
   }

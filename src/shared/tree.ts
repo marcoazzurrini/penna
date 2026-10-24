@@ -1,4 +1,4 @@
-import type { NodePatch, PennaNode, PennaPage, RenderDoc } from "./types.ts";
+import type { NodePatch, PennaDoc, PennaNode, PennaPage } from "./types.ts";
 
 export interface Located {
   node: PennaNode;
@@ -10,18 +10,14 @@ export function isPage(x: PennaNode | PennaPage): x is PennaPage {
   return !("type" in x);
 }
 
-/** Map of every node id in the document to its location. Library components are keyed `file#id`. */
-export function indexDoc(doc: RenderDoc): Map<string, Located> {
+/** Map of every node id in the document to its location. */
+export function indexDoc(doc: PennaDoc): Map<string, Located> {
   const map = new Map<string, Located>();
   const visit = (node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage) => {
     map.set(node.id, { node, parent, page });
     if (node.children) for (const c of node.children) visit(c, node, page);
   };
   for (const page of doc.pages) for (const n of page.children) visit(n, page, page);
-  for (const key in doc.libs ?? {}) {
-    const page: PennaPage = { id: "", name: key.split("#")[0], children: [] };
-    map.set(key, { node: doc.libs![key], parent: page, page });
-  }
   return map;
 }
 
@@ -112,4 +108,20 @@ export function refsUsed(node: PennaNode, index: Map<string, Located>, out = new
     }
   });
   return out;
+}
+
+/** Find a component by id or name, preferring nodes marked as components. */
+export function findComponent(doc: PennaDoc, key: string, index?: Map<string, Located>): PennaNode | undefined {
+  const byId = (index ?? indexDoc(doc)).get(key)?.node;
+  if (byId) return byId;
+  let comp: PennaNode | undefined;
+  let other: PennaNode | undefined;
+  for (const p of doc.pages) {
+    walk(p.children, (n) => {
+      if (n.name !== key) return;
+      if (n.component) comp ??= n;
+      else other ??= n;
+    });
+  }
+  return comp ?? other;
 }

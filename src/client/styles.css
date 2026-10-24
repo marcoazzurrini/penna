@@ -57,15 +57,12 @@ body {
   font-weight: 650;
   letter-spacing: -0.01em;
 }
-#file-select {
-  flex: 1;
+#project {
   min-width: 0;
-  font: inherit;
-  color: inherit;
-  background: var(--ui-hover);
-  border: 0;
-  border-radius: 6px;
-  padding: 4px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-muted);
 }
 .panel {
   padding: 8px 0;

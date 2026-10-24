@@ -1,6 +1,6 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc, refsUsed, type Located } from "../shared/tree.ts";
-import type { PennaNode, PennaPage, RenderDoc } from "../shared/types.ts";
+import type { PennaNode, PennaPage, PennaDoc } from "../shared/types.ts";
 import { startHeadless } from "./headless.ts";
 import { fontFamilies, loadFonts, renderNode } from "./render.ts";
 
@@ -17,9 +17,7 @@ interface Rendered {
   node: PennaNode;
 }
 
-type ServerMsg =
-  | { t: "files"; files: string[]; root: string }
-  | { t: "doc"; file: string; rev: number; doc: RenderDoc; focus?: string };
+type ServerMsg = { t: "doc"; project: string; rev: number; doc: PennaDoc; focus?: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -29,7 +27,7 @@ function startViewer() {
   const labels = $<HTMLElement>("labels");
   const hoverBox = $<HTMLElement>("hover-box");
   const selectBox = $<HTMLElement>("select-box");
-  const fileSelect = $<HTMLSelectElement>("file-select");
+  const projectEl = $<HTMLElement>("project");
   const pagesEl = $<HTMLUListElement>("pages");
   const layersEl = $<HTMLElement>("layers");
   const info = $<HTMLElement>("info");
@@ -39,9 +37,10 @@ function startViewer() {
   const follow = $<HTMLInputElement>("follow");
 
   let ws: WebSocket | null = null;
-  let files: string[] = [];
-  let file = localStorage.getItem("penna:file") ?? "";
-  let doc: RenderDoc | null = null;
+  // localStorage is shared by every project served on this port, so keys include the project.
+  let project = "";
+  const key = (k: string) => `penna:${project}:${k}`;
+  let doc: PennaDoc | null = null;
   let index = new Map<string, Located>();
   let pageId = "";
   let selected: string | null = null;
@@ -61,7 +60,6 @@ function startViewer() {
     ws.onopen = () => {
       statusEl.className = "";
       statusEl.title = "Connected";
-      if (file) send({ t: "open", file });
     };
     ws.onclose = () => {
       statusEl.className = "off";
@@ -76,38 +74,20 @@ function startViewer() {
   }
 
   function onMessage(msg: ServerMsg) {
-    if (msg.t === "files") {
-      files = msg.files;
-      document.title = `penna · ${msg.root.split("/").pop()}`;
-      if (!files.includes(file)) openFile(files[0] ?? "");
-      renderFileSelect();
-      updateEmpty();
-      return;
-    }
     if (msg.t === "doc") {
-      if (msg.file !== file) {
-        if (!msg.focus || !follow.checked) return;
-        file = msg.file;
-        localStorage.setItem("penna:file", file);
-        renderFileSelect();
+      if (msg.project !== project) {
+        project = msg.project;
+        projectEl.textContent = project;
+        document.title = `penna · ${project}`;
       }
       const first = !doc;
       doc = msg.doc;
       index = indexDoc(doc);
       if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
-      if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(`penna:page:${file}`) ?? "";
+      if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(key("page")) ?? "";
       if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
       renderDoc(first);
     }
-  }
-
-  function openFile(name: string) {
-    if (name === file && doc) return;
-    file = name;
-    doc = null;
-    localStorage.setItem("penna:file", file);
-    clearCanvas();
-    if (file) send({ t: "open", file });
   }
 
   // ---------- Rendering ----------
@@ -131,8 +111,8 @@ function startViewer() {
     if (pageChanged) {
       clearCanvas();
       lastPage = pg?.id ?? "";
-      localStorage.setItem(`penna:page:${file}`, lastPage);
-      send({ t: "view", file, page: lastPage });
+      localStorage.setItem(key("page"), lastPage);
+      send({ t: "view", page: lastPage });
     }
     world.style.cssText = variablesToCss(doc.variables) + world.style.cssText.replace(/--[^;]+;/g, "");
     void loadFonts(fontFamilies(doc));
@@ -180,7 +160,7 @@ function startViewer() {
         r.el.classList.add("cv");
       }
       // The server uses real sizes to auto-place new screens without overlap.
-      send({ t: "sizes", file, sizes: Object.fromEntries([...sizes].map(([id, s]) => [id, [s.w, s.h]])) });
+      send({ t: "sizes", sizes: Object.fromEntries([...sizes].map(([id, s]) => [id, [s.w, s.h]])) });
       if (first || pageChanged) restoreCamera();
       else updateOverlay();
     });
@@ -193,7 +173,7 @@ function startViewer() {
   }
 
   function updateEmpty() {
-    const msg = !files.length ? "No designs yet." : doc && !page()?.children.length ? "This page is empty." : "";
+    const msg = !doc ? "" : !doc.pages.some((p) => p.children.length) ? "No designs yet." : !page()?.children.length ? "This page is empty." : "";
     empty.hidden = !msg;
     if (msg) empty.firstElementChild!.textContent = msg;
   }
@@ -209,18 +189,6 @@ function startViewer() {
 
   // ---------- Sidebar ----------
 
-  function renderFileSelect() {
-    fileSelect.textContent = "";
-    for (const f of files) {
-      const o = document.createElement("option");
-      o.value = f;
-      o.textContent = f;
-      o.selected = f === file;
-      fileSelect.appendChild(o);
-    }
-    fileSelect.disabled = files.length === 0;
-  }
-  fileSelect.onchange = () => openFile(fileSelect.value);
 
   function renderPages() {
     pagesEl.textContent = "";
@@ -307,11 +275,11 @@ function startViewer() {
   }
 
   function saveCamera() {
-    if (file && pageId) localStorage.setItem(`penna:cam:${file}:${pageId}`, JSON.stringify(cam));
+    if (pageId) localStorage.setItem(key(`cam:${pageId}`), JSON.stringify(cam));
   }
 
   function restoreCamera() {
-    const saved = localStorage.getItem(`penna:cam:${file}:${pageId}`);
+    const saved = localStorage.getItem(key(`cam:${pageId}`));
     if (saved) {
       cam = JSON.parse(saved);
       applyCamera();
@@ -452,7 +420,7 @@ function startViewer() {
 
   function select(id: string | null, fromLayers: boolean) {
     selected = id;
-    send({ t: "select", file, page: pageId, ids: id ? [id] : [] });
+    send({ t: "select", page: pageId, ids: id ? [id] : [] });
     if (fromLayers && id) {
       const el = world.querySelector(`[data-id="${CSS.escape(id)}"]`);
       const v = viewport.getBoundingClientRect();
@@ -515,7 +483,7 @@ function startViewer() {
     else if (e.shiftKey && e.code === "Digit2" && selected) zoomTo(selected);
     else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      send({ t: e.shiftKey ? "redo" : "undo", file });
+      send({ t: e.shiftKey ? "redo" : "undo" });
     } else if (mod && (e.key === "=" || e.key === "+")) {
       e.preventDefault();
       zoomAt(1.25, viewport.clientWidth / 2, viewport.clientHeight / 2);

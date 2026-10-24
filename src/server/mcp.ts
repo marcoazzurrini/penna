@@ -38,10 +38,9 @@ export async function runMcp(root: string) {
     "execute",
     {
       description:
-        "Run a JavaScript snippet that reads and edits a penna design file in .penna/. One call can build a whole screen and screenshot it. Each call is atomic. Call read_skill first for the API.",
+        "Run a JavaScript snippet that reads and edits this project's penna design (.penna/). One call can build a whole screen and screenshot it. Each call is atomic. Call read_skill first for the API.",
       inputSchema: {
         code: z.string().optional().describe("JavaScript snippet. Required unless editId is given."),
-        file: z.string().optional().describe("Design file name in .penna/ without .json. Defaults to the file open in the viewer, else the first file, else \"design\". Created if missing."),
         editId: z.string().optional().describe("Id of a failed call to patch and re-run. Use with edits, without code."),
         edits: z
           .array(z.object({ find: z.string(), replace: z.string(), all: z.boolean().optional() }))

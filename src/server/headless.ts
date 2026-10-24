@@ -1,5 +1,5 @@
 import type { Browser, Page } from "playwright-core";
-import type { RenderDoc } from "../shared/types.ts";
+import type { PennaDoc } from "../shared/types.ts";
 
 export interface LayoutReport {
   width: number;
@@ -11,8 +11,8 @@ export interface LayoutReport {
 
 interface PennaWindow {
   __penna: {
-    render(doc: RenderDoc, page: string, id: string, scale?: number): Promise<{ width: number; height: number }>;
-    layout(doc: RenderDoc, page: string, id: string): Promise<LayoutReport>;
+    render(doc: PennaDoc, page: string, id: string, scale?: number): Promise<{ width: number; height: number }>;
+    layout(doc: PennaDoc, page: string, id: string): Promise<LayoutReport>;
   };
 }
 
@@ -65,7 +65,7 @@ export class Headless {
     return next;
   }
 
-  screenshot(doc: RenderDoc, pageId: string, nodeId: string, scale?: number): Promise<Buffer> {
+  screenshot(doc: PennaDoc, pageId: string, nodeId: string, scale?: number): Promise<Buffer> {
     return this.serial(async () => {
       const page = await this.ready();
       await page.evaluate(
@@ -76,7 +76,7 @@ export class Headless {
     });
   }
 
-  layout(doc: RenderDoc, pageId: string, nodeId: string): Promise<LayoutReport> {
+  layout(doc: PennaDoc, pageId: string, nodeId: string): Promise<LayoutReport> {
     return this.serial(async () => {
       const page = await this.ready();
       return page.evaluate(

@@ -6,7 +6,6 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { Executor, type ExecRequest, type ExecResult } from "./execute.ts";
 import { fontsCss } from "./fonts.ts";
 import { Headless } from "./headless.ts";
-import { withLibraries } from "./libs.ts";
 import { pkgPath, resolveDep } from "./paths.ts";
 import { Store } from "./store.ts";
 
@@ -69,31 +68,17 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
   const headless = new Headless(() => url);
   const executor = new Executor(store, headless, iconDir, () => url);
 
-  const clients = new Map<WebSocket, { file: string }>();
-  const broadcast = (msg: object, file?: string) => {
-    const text = JSON.stringify(msg);
-    for (const [ws, c] of clients) if (!file || c.file === file || "focus" in msg) ws.send(text);
-  };
-  const filesMsg = () => ({ t: "files", files: store.list(), root });
-  let focus: { file: string; page: string } | null = null;
+  const clients = new Set<WebSocket>();
+  const project = path.basename(root);
+  let focus: string | null = null;
+  const docMsg = (): Record<string, unknown> => ({ t: "doc", project, rev: store.rev, doc: store.get() });
 
-  store.on("files", () => broadcast(filesMsg()));
-  const docMsg = (file: string) => {
-    const doc = store.get(file);
-    return doc ? { t: "doc", file, rev: store.rev(file), doc: withLibraries(store, file, doc).doc } : undefined;
-  };
-  store.on("change", (file: string) => {
-    const msg: Record<string, unknown> | undefined = docMsg(file);
-    if (!msg) return;
-    if (focus?.file === file) msg.focus = focus.page;
+  store.on("change", () => {
+    const msg = docMsg();
+    if (focus) msg.focus = focus;
     focus = null;
-    broadcast(msg, file);
-    // Files that use components from this one need re-rendering too.
-    const open = new Set([...clients.values()].map((c) => c.file));
-    for (const other of open) {
-      const doc = other && other !== file ? store.get(other) : undefined;
-      if (doc && withLibraries(store, other, doc).files.has(file)) broadcast(docMsg(other)!, other);
-    }
+    const text = JSON.stringify(msg);
+    for (const ws of clients) ws.send(text);
   });
 
   const exec = (req: ExecRequest) => executor.run(req);
@@ -115,8 +100,8 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
     const want = Buffer.from(`Bearer ${token}`);
     return given.length === want.length && crypto.timingSafeEqual(given, want);
   };
-  executor.onCommit = (file, page) => {
-    focus = { file, page };
+  executor.onCommit = (page) => {
+    focus = page;
   };
 
   const server = http.createServer(async (req, res) => {
@@ -168,30 +153,21 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws));
   });
   wss.on("connection", (ws: WebSocket) => {
-    clients.set(ws, { file: "" });
-    ws.send(JSON.stringify(filesMsg()));
+    clients.add(ws);
+    ws.send(JSON.stringify(docMsg()));
     ws.on("close", () => clients.delete(ws));
     ws.on("message", (data) => {
-      let msg: { t: string; file?: string; page?: string; ids?: string[] };
+      let msg: { t: string; page?: string; ids?: string[]; sizes?: Record<string, [number, number]> };
       try {
         msg = JSON.parse(String(data));
       } catch {
         return;
       }
-      const file = msg.file ?? "";
-      if (msg.t === "open") {
-        clients.get(ws)!.file = file;
-        const msg = docMsg(file);
-        if (msg) ws.send(JSON.stringify(msg));
-      } else if (msg.t === "view" && msg.page) {
-        clients.get(ws)!.file = file;
-        store.viewing = { file, page: msg.page };
-      } else if (msg.t === "select") {
-        store.selection = { file, page: msg.page ?? "", ids: msg.ids ?? [] };
-      } else if (msg.t === "sizes") {
-        for (const [id, s] of Object.entries((msg as unknown as { sizes: Record<string, [number, number]> }).sizes ?? {})) store.sizes.set(id, s);
-      } else if (msg.t === "undo") store.undo(file);
-      else if (msg.t === "redo") store.redo(file);
+      if (msg.t === "view" && typeof msg.page === "string") store.viewing = msg.page;
+      else if (msg.t === "select") store.selection = { page: String(msg.page ?? ""), ids: Array.isArray(msg.ids) ? msg.ids.map(String) : [] };
+      else if (msg.t === "sizes") for (const [id, s] of Object.entries(msg.sizes ?? {})) store.sizes.set(id, s);
+      else if (msg.t === "undo") store.undo();
+      else if (msg.t === "redo") store.redo();
     });
   });
 
@@ -208,7 +184,7 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
     } catch {}
     store.unwatch();
     await headless.close();
-    for (const ws of clients.keys()) ws.terminate();
+    for (const ws of clients) ws.terminate();
     wss.close();
     server.closeAllConnections();
     await new Promise((r) => server.close(r));

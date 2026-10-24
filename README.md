@@ -2,10 +2,10 @@
 
 An agent-first design canvas that lives in your repo, like Storybook does.
 
-- Designs are plain JSON files in `.penna/` at your project root, so they diff and merge in git.
+- Designs live in `.penna/` at your project root, one JSON file per page, so they diff and merge in git.
 - Agents edit them through one tool, `execute`, that runs a JavaScript snippet. One call can build a whole screen.
 - Designs render as real HTML and CSS (flexbox, grid, Tailwind v4, Google Fonts, Lucide icons), so agents use what they already know.
-- Components can live in their own file, such as `.penna/design-system.json`, and be used from any other file with `ref: "design-system#Button"`.
+- A component on any page can be used on every page, so a design-system page feeds all your screens.
 - `penna` opens a light, view-only canvas on localhost: pan, zoom, pages, layers, and live updates while the agent works.
 
 ## Quick start
@@ -29,7 +29,7 @@ Other MCP clients: run `npx -y @marcoazzurrini/penna mcp` from the project folde
 - Click to select a node. The agent can read it with `Selection()`. Esc selects the parent.
 - Shift+1 fits everything. Shift+2 zooms to the selection.
 - Cmd/Ctrl+Z undoes the agent's last change. Shift+Cmd/Ctrl+Z redoes it.
-- "Follow agent" jumps to the file and page the agent is editing.
+- "Follow agent" jumps to the page the agent is editing.
 
 ## Agent API
 

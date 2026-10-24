@@ -1,6 +1,6 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc } from "../shared/tree.ts";
-import type { RenderDoc } from "../shared/types.ts";
+import type { PennaDoc } from "../shared/types.ts";
 import { fontFamilies, loadFonts, renderNode } from "./render.ts";
 
 // Render API driven by the server's headless browser for screenshots and layout checks.
@@ -25,7 +25,7 @@ async function settle(stage: HTMLElement) {
   await nextFrame();
 }
 
-async function mount(doc: RenderDoc, pageId: string, nodeId: string): Promise<HTMLElement> {
+async function mount(doc: PennaDoc, pageId: string, nodeId: string): Promise<HTMLElement> {
   document.getElementById("stage")?.remove();
   const stage = document.createElement("div");
   stage.id = "stage";
@@ -69,7 +69,7 @@ async function mount(doc: RenderDoc, pageId: string, nodeId: string): Promise<HT
   return stage;
 }
 
-async function render(doc: RenderDoc, pageId: string, nodeId: string, scale?: number) {
+async function render(doc: PennaDoc, pageId: string, nodeId: string, scale?: number) {
   const stage = await mount(doc, pageId, nodeId);
   const r = stage.getBoundingClientRect();
   const s = scale ?? Math.min(1, MAX_SIDE / Math.max(r.width, r.height, 1));
@@ -88,7 +88,7 @@ interface Rect {
   h: number;
 }
 
-async function layout(doc: RenderDoc, pageId: string, nodeId: string) {
+async function layout(doc: PennaDoc, pageId: string, nodeId: string) {
   const stage = await mount(doc, pageId, nodeId);
   const root = stage.firstElementChild as HTMLElement | null;
   if (!root) return { width: 0, height: 0, nodes: [], problems: ["Node is hidden or empty."] };
