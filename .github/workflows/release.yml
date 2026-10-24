@@ -25,6 +25,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - name: Open a version PR, or publish when it is merged
+        id: changesets
         uses: changesets/action@v1
         with:
           version: npm run version-packages
@@ -33,3 +34,15 @@ jobs:
           commit: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # changesets/action v1 does not recognise Changesets v3 publish output, so it
+      # creates no tag or GitHub release. Do it here once the version is on npm.
+      - name: Create the GitHub release
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "@marcoazzurrini/penna@$v" version >/dev/null 2>&1 && ! gh release view "v$v" >/dev/null 2>&1; then
+            awk -v h="## $v" '$0==h{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+            gh release create "v$v" --target "$GITHUB_SHA" --title "v$v" --notes-file notes.md
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
