@@ -8,6 +8,8 @@ import { fontsCss } from "./fonts.ts";
 import { Headless } from "./headless.ts";
 import { pkgPath, resolveDep } from "./paths.ts";
 import { Store } from "./store.ts";
+import { Tailwind } from "./tailwind.ts";
+import { Wire } from "./wire.ts";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -62,19 +64,19 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
 
   const clientDir = pkgPath("dist", "client");
   const iconDir = path.join(resolveDep("lucide-static"), "icons");
-  const tailwindFile = path.join(resolveDep("@tailwindcss/browser"), "dist", "index.global.js");
+  const project = path.basename(root);
+  const wire = new Wire(project, await Tailwind.create());
+  wire.update(store.get(), store.rev);
 
   let url = "";
-  const headless = new Headless(() => url);
+  const headless = new Headless(() => url, () => wire.css);
   const executor = new Executor(store, headless, iconDir, () => url);
 
   const clients = new Set<WebSocket>();
-  const project = path.basename(root);
   let focus: string | null = null;
-  const docMsg = (): Record<string, unknown> => ({ t: "doc", project, rev: store.rev, doc: store.get() });
 
-  store.on("change", () => {
-    const msg = docMsg();
+  store.on("change", (files: Set<string>) => {
+    const msg = wire.update(store.get(), store.rev, files);
     if (focus) msg.focus = focus;
     focus = null;
     const text = JSON.stringify(msg);
@@ -132,7 +134,6 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
       res.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "max-age=3600" });
       return res.end(await fontsCss(families));
     }
-    if (p === "/vendor/tailwind.js") return sendFile(res, tailwindFile, "max-age=86400");
     if (p.startsWith("/icon/")) {
       const name = path.basename(p.slice(6), ".svg");
       return sendFile(res, path.join(iconDir, name + ".svg"), "max-age=86400");
@@ -154,7 +155,7 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
   });
   wss.on("connection", (ws: WebSocket) => {
     clients.add(ws);
-    ws.send(JSON.stringify(docMsg()));
+    ws.send(JSON.stringify(wire.full(store.get(), store.rev)));
     ws.on("close", () => clients.delete(ws));
     ws.on("message", (data) => {
       let msg: { t: string; page?: string; ids?: string[]; sizes?: Record<string, [number, number]> };

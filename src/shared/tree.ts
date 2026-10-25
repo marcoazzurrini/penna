@@ -4,6 +4,8 @@ export interface Located {
   node: PennaNode;
   parent: PennaNode | PennaPage;
   page: PennaPage;
+  /** The top-level node that contains this one, or the node itself. */
+  top: PennaNode;
 }
 
 export function isPage(x: PennaNode | PennaPage): x is PennaPage {
@@ -13,11 +15,11 @@ export function isPage(x: PennaNode | PennaPage): x is PennaPage {
 /** Map of every node id in the document to its location. */
 export function indexDoc(doc: PennaDoc): Map<string, Located> {
   const map = new Map<string, Located>();
-  const visit = (node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage) => {
-    map.set(node.id, { node, parent, page });
-    if (node.children) for (const c of node.children) visit(c, node, page);
+  const visit = (node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage, top: PennaNode) => {
+    map.set(node.id, { node, parent, page, top });
+    if (node.children) for (const c of node.children) visit(c, node, page, top);
   };
-  for (const page of doc.pages) for (const n of page.children) visit(n, page, page);
+  for (const page of doc.pages) for (const n of page.children) visit(n, page, page, n);
   return map;
 }
 
@@ -96,18 +98,6 @@ export function walk(nodes: PennaNode[], fn: (n: PennaNode, depth: number, paren
     if (fn(n, depth, parent) === false) continue;
     if (n.children) walk(n.children, fn, depth + 1, n);
   }
-}
-
-/** Ids of components that `node` uses, directly or through nested instances. */
-export function refsUsed(node: PennaNode, index: Map<string, Located>, out = new Set<string>()): Set<string> {
-  walk([node], (n) => {
-    if (n.type === "ref" && n.ref && !out.has(n.ref)) {
-      out.add(n.ref);
-      const comp = index.get(n.ref)?.node;
-      if (comp) refsUsed(comp, index, out);
-    }
-  });
-  return out;
 }
 
 /** Find a component by id or name, preferring nodes marked as components. */

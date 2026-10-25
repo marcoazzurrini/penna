@@ -1,8 +1,9 @@
 import { variablesToCss } from "../shared/style.ts";
-import { indexDoc, refsUsed, type Located } from "../shared/tree.ts";
+import { indexDoc, walk, type Located } from "../shared/tree.ts";
 import type { PennaNode, PennaPage, PennaDoc } from "../shared/types.ts";
+import { frameKey, type DocMessage } from "../shared/wire.ts";
 import { startHeadless } from "./headless.ts";
-import { fontFamilies, loadFonts, renderNode } from "./render.ts";
+import { fontFamilies, loadFonts, renderNode, setTailwindCss } from "./render.ts";
 
 interface Camera {
   x: number;
@@ -17,7 +18,7 @@ interface Rendered {
   node: PennaNode;
 }
 
-type ServerMsg = { t: "doc"; project: string; rev: number; doc: PennaDoc; focus?: string };
+type ServerMsg = DocMessage;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -42,6 +43,9 @@ function startViewer() {
   const key = (k: string) => `penna:${project}:${k}`;
   let doc: PennaDoc | null = null;
   let index = new Map<string, Located>();
+  /** Top-level nodes received from the server, by frameKey, with their hashes. */
+  let frames = new Map<string, { node: PennaNode; hash: string }>();
+  let themesKey = "";
   let pageId = "";
   let selected: string | null = null;
   let hovered: string | null = null;
@@ -101,8 +105,26 @@ function startViewer() {
         document.title = `penna · ${project}`;
       }
       const first = !doc;
-      doc = msg.doc;
+      if (msg.full) frames.clear();
+      for (const f of msg.nodes) frames.set(frameKey(f.page, f.node.id), { node: f.node, hash: f.hash });
+      // Rebuild the document from the nodes we already have plus the ones that changed.
+      const live = new Map<string, { node: PennaNode; hash: string }>();
+      const pages = msg.pages.map((p) => ({
+        id: p.id,
+        name: p.name,
+        children: p.nodes.flatMap((id) => {
+          const key = frameKey(p.id, id);
+          const f = frames.get(key);
+          if (!f) return [];
+          live.set(key, f);
+          return [f.node];
+        }),
+      }));
+      frames = live;
+      doc = { version: 2, variables: msg.variables, themes: msg.themes, pages };
+      themesKey = JSON.stringify(doc.themes ?? null);
       index = indexDoc(doc);
+      if (msg.css !== undefined) setTailwindCss(msg.css);
       if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
       if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(key("page")) ?? "";
       if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
@@ -142,11 +164,10 @@ function startViewer() {
     const nodes = pg?.children ?? [];
     for (const node of nodes) {
       seen.add(node.id);
-      const sig = signature(node);
+      const sig = signature(node, pg!.id);
       const prev = rendered.get(node.id);
       if (prev && prev.sig === sig) {
         prev.node = node;
-        world.appendChild(prev.el); // keeps z-order in sync with the document
         continue;
       }
       const wrap = document.createElement("div");
@@ -168,6 +189,15 @@ function startViewer() {
       r.el.remove();
       r.label.remove();
       rendered.delete(id);
+    }
+    // Keep z-order in sync with the document. Only move frames that are out of place,
+    // because moving one makes the browser style and lay it out again.
+    let at = world.firstElementChild;
+    for (const node of nodes) {
+      const el = rendered.get(node.id)?.el;
+      if (!el) continue;
+      if (el === at) at = at.nextElementSibling;
+      else world.insertBefore(el, at);
     }
     // Frames render fully once so we can measure them. After that, content-visibility
     // lets the browser skip painting frames that are off screen.
@@ -198,13 +228,43 @@ function startViewer() {
     if (msg) empty.firstElementChild!.textContent = msg;
   }
 
-  /** A string that changes whenever the frame's rendered output could change. */
-  function signature(node: PennaNode): string {
-    let sig = JSON.stringify(node);
-    const used = refsUsed(node, index);
-    for (const id of used) sig += JSON.stringify(index.get(id)?.node ?? null);
-    if (doc?.themes) sig += JSON.stringify(doc.themes);
-    return sig;
+  /**
+   * A string that changes whenever the frame's rendered output could change: the
+   * server's hash of the frame, of each frame holding a component it uses, and the themes.
+   */
+  function signature(node: PennaNode, pageId: string): string {
+    let sig = frames.get(frameKey(pageId, node.id))?.hash ?? JSON.stringify(node);
+    for (const id of refsUsed(node)) {
+      const loc = index.get(id);
+      sig += ` ${id}=${loc ? frames.get(frameKey(loc.page.id, loc.top.id))?.hash : "-"}`;
+    }
+    return sig + themesKey;
+  }
+
+  // Unchanged nodes keep their objects between updates, so their refs can be cached.
+  const directRefs = new WeakMap<PennaNode, string[]>();
+  function refsIn(node: PennaNode): string[] {
+    let refs = directRefs.get(node);
+    if (!refs) {
+      const found: string[] = [];
+      walk([node], (n) => void (n.type === "ref" && n.ref && found.push(n.ref)));
+      directRefs.set(node, (refs = found));
+    }
+    return refs;
+  }
+
+  /** Ids of components that `node` uses, directly or through nested instances. */
+  function refsUsed(node: PennaNode): Set<string> {
+    const out = new Set<string>();
+    const queue = [...refsIn(node)];
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (out.has(id)) continue;
+      out.add(id);
+      const comp = index.get(id)?.node;
+      if (comp) queue.push(...refsIn(comp));
+    }
+    return out;
   }
 
   // ---------- Sidebar ----------

@@ -1,7 +1,7 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc } from "../shared/tree.ts";
 import type { PennaDoc } from "../shared/types.ts";
-import { fontFamilies, loadFonts, renderNode } from "./render.ts";
+import { fontFamilies, loadFonts, renderNode, setTailwindCss } from "./render.ts";
 
 // Render API driven by the server's headless browser for screenshots and layout checks.
 
@@ -14,7 +14,6 @@ function nextFrame() {
 
 async function settle(stage: HTMLElement) {
   await nextFrame();
-  await nextFrame(); // Tailwind compiles new classes on a mutation observer.
   void stage.offsetHeight;
   await document.fonts.ready;
   const imgs = [...stage.querySelectorAll("img")].filter((i) => !i.complete);
@@ -25,8 +24,9 @@ async function settle(stage: HTMLElement) {
   await nextFrame();
 }
 
-async function mount(doc: PennaDoc, pageId: string, nodeId: string): Promise<HTMLElement> {
+async function mount(doc: PennaDoc, css: string, pageId: string, nodeId: string): Promise<HTMLElement> {
   document.getElementById("stage")?.remove();
+  setTailwindCss(css);
   const stage = document.createElement("div");
   stage.id = "stage";
   stage.className = "pn-root";
@@ -69,8 +69,8 @@ async function mount(doc: PennaDoc, pageId: string, nodeId: string): Promise<HTM
   return stage;
 }
 
-async function render(doc: PennaDoc, pageId: string, nodeId: string, scale?: number) {
-  const stage = await mount(doc, pageId, nodeId);
+async function render(doc: PennaDoc, css: string, pageId: string, nodeId: string, scale?: number) {
+  const stage = await mount(doc, css, pageId, nodeId);
   const r = stage.getBoundingClientRect();
   const s = scale ?? Math.min(1, MAX_SIDE / Math.max(r.width, r.height, 1));
   if (s !== 1) {
@@ -88,8 +88,8 @@ interface Rect {
   h: number;
 }
 
-async function layout(doc: PennaDoc, pageId: string, nodeId: string) {
-  const stage = await mount(doc, pageId, nodeId);
+async function layout(doc: PennaDoc, css: string, pageId: string, nodeId: string) {
+  const stage = await mount(doc, css, pageId, nodeId);
   const root = stage.firstElementChild as HTMLElement | null;
   if (!root) return { width: 0, height: 0, nodes: [], problems: ["Node is hidden or empty."] };
   const origin = root.getBoundingClientRect();
