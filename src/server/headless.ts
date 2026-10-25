@@ -11,8 +11,8 @@ export interface LayoutReport {
 
 interface PennaWindow {
   __penna: {
-    render(doc: PennaDoc, page: string, id: string, scale?: number): Promise<{ width: number; height: number }>;
-    layout(doc: PennaDoc, page: string, id: string): Promise<LayoutReport>;
+    render(doc: PennaDoc, css: string, page: string, id: string, scale?: number): Promise<{ width: number; height: number }>;
+    layout(doc: PennaDoc, css: string, page: string, id: string): Promise<LayoutReport>;
   };
 }
 
@@ -22,9 +22,12 @@ export class Headless {
   private page: Promise<Page> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private url: () => string;
+  private css: () => string;
 
-  constructor(url: () => string) {
+  /** `css` returns the Tailwind stylesheet for the documents being rendered. */
+  constructor(url: () => string, css: () => string = () => "") {
     this.url = url;
+    this.css = css;
   }
 
   private async start(): Promise<Page> {
@@ -69,8 +72,8 @@ export class Headless {
     return this.serial(async () => {
       const page = await this.ready();
       await page.evaluate(
-        ([d, p, id, s]) => (window as unknown as PennaWindow).__penna.render(d, p, id, s),
-        [doc, pageId, nodeId, scale] as const,
+        ([d, css, p, id, s]) => (window as unknown as PennaWindow).__penna.render(d, css, p, id, s),
+        [doc, this.css(), pageId, nodeId, scale] as const,
       );
       return page.locator("#stage").screenshot({ type: "png", animations: "disabled" });
     });
@@ -80,8 +83,8 @@ export class Headless {
     return this.serial(async () => {
       const page = await this.ready();
       return page.evaluate(
-        ([d, p, id]) => (window as unknown as PennaWindow).__penna.layout(d, p, id),
-        [doc, pageId, nodeId] as const,
+        ([d, css, p, id]) => (window as unknown as PennaWindow).__penna.layout(d, css, p, id),
+        [doc, this.css(), pageId, nodeId] as const,
       );
     });
   }

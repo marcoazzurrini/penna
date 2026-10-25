@@ -99,7 +99,7 @@ export class Store extends EventEmitter {
     this.undoStack.push(prev);
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
-    this.changed();
+    this.changed(prev);
   }
 
   undo(): boolean {
@@ -113,17 +113,19 @@ export class Store extends EventEmitter {
   private step(from: Snapshot[], to: Snapshot[]): boolean {
     const snap = from.pop();
     if (!snap) return false;
-    to.push(this.write(snap));
-    this.changed();
+    const prev = this.write(snap);
+    to.push(prev);
+    this.changed(prev);
     return true;
   }
 
-  private changed() {
+  /** `files` are the paths, relative to `.penna/`, whose contents changed. */
+  private changed(files: Snapshot) {
     // Re-assemble from the written text so the stored copy is plain data, free of
     // objects from the snippet sandbox.
     this.doc = this.assemble();
     this.rev++;
-    this.emit("change");
+    this.emit("change", new Set(files.keys()));
   }
 
   /** Write the files whose contents differ. Returns their previous contents, for undo. */
@@ -274,6 +276,6 @@ export class Store extends EventEmitter {
     }
     if (!prev.size) return;
     this.undoStack.push(prev);
-    this.changed();
+    this.changed(prev);
   }
 }

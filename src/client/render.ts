@@ -152,6 +152,68 @@ const GENERIC = new Set([
   "menlo", "monaco", "sf pro", "sf pro display", "sf pro text", "sf mono", "courier new",
 ]);
 
+let tailwindCss = "";
+
+/**
+ * Apply the Tailwind stylesheet compiled by the server. Replacing a whole stylesheet
+ * makes the browser restyle every element, so insert only the rules that are new and
+ * replace only the rules that changed. If the sheets cannot be matched up, replace it all.
+ */
+export function setTailwindCss(css: string) {
+  if (css === tailwindCss) return;
+  const el = document.getElementById("tailwind") as HTMLStyleElement;
+  const live = el.sheet;
+  if (live && tailwindCss) {
+    const next = new CSSStyleSheet();
+    next.replaceSync(css);
+    if (!mergeRules(live, next)) el.textContent = css;
+  } else el.textContent = css;
+  tailwindCss = css;
+}
+
+type RuleList = { cssRules: CSSRuleList; insertRule(rule: string, index: number): number; deleteRule(index: number): void };
+
+// Compared by constructor name, because older browsers lack some of these classes.
+const GROUPS = new Set(["CSSLayerBlockRule", "CSSMediaRule", "CSSSupportsRule", "CSSContainerRule"]);
+
+function isGroup(r: CSSRule): r is CSSGroupingRule {
+  return GROUPS.has(r.constructor.name);
+}
+
+/** Rules with the same key are versions of each other. */
+function ruleKey(r: CSSRule): string {
+  const kind = r.constructor.name;
+  const x = r as CSSRule & { selectorText?: string; name?: string; conditionText?: string };
+  if (kind === "CSSStyleRule") return "s " + x.selectorText;
+  if (kind === "CSSLayerBlockRule" || kind === "CSSPropertyRule") return kind + " " + x.name;
+  if (x.conditionText !== undefined) return kind + " " + x.conditionText;
+  return r.cssText;
+}
+
+/** Edit `live` in place until it matches `next`. Returns false if it could not. */
+function mergeRules(live: RuleList, next: { cssRules: CSSRuleList }): boolean {
+  const a = live.cssRules, b = next.cssRules;
+  let i = 0;
+  for (let j = 0; j < b.length; j++) {
+    const want = b[j], have = a[i];
+    if (have && have.cssText === want.cssText) {
+      i++;
+    } else if (have && ruleKey(have) === ruleKey(want)) {
+      if (isGroup(have) && isGroup(want)) {
+        if (!mergeRules(have, want)) return false;
+      } else {
+        live.deleteRule(i);
+        live.insertRule(want.cssText, i);
+      }
+      i++;
+    } else {
+      live.insertRule(want.cssText, i++);
+    }
+  }
+  // Rules left over in `live` were removed or reordered, which this does not handle.
+  return i === a.length;
+}
+
 let fontLink: HTMLLinkElement | null = null;
 let fontKey = "";
 
