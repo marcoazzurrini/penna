@@ -7,6 +7,7 @@ import { Executor, type ExecRequest, type ExecResult } from "./execute.ts";
 import { fontsCss } from "./fonts.ts";
 import { Headless } from "./headless.ts";
 import { pkgPath, resolveDep } from "./paths.ts";
+import { defaultPort, gitBranch, portAllowed, repoName } from "./project.ts";
 import { Store } from "./store.ts";
 import { Tailwind } from "./tailwind.ts";
 import { Wire } from "./wire.ts";
@@ -31,6 +32,10 @@ export interface ServerInfo {
   pid: number;
   url: string;
   root: string;
+  /** Repository name, which stays the same in every worktree. */
+  project: string;
+  /** Branch checked out when the server started. Use `gitBranch()` for the current one. */
+  branch: string | null;
   /** Secret required by /api/exec. Only readable by the local user, via the lock file. */
   token: string;
 }
@@ -57,15 +62,16 @@ export function lockFile(root: string) {
   return path.join(root, ".penna", ".server.json");
 }
 
-export async function startServer(root: string, preferredPort = 6060): Promise<PennaServer> {
+/** Start the server. The port defaults to one derived from `root`; pass 0 for any free port. */
+export async function startServer(root: string, preferredPort = defaultPort(root)): Promise<PennaServer> {
   const store = new Store(root);
   store.ensureDir();
   store.watch();
 
   const clientDir = pkgPath("dist", "client");
   const iconDir = path.join(resolveDep("lucide-static"), "icons");
-  const project = path.basename(root);
-  const wire = new Wire(project, await Tailwind.create());
+  const project = repoName(root);
+  const wire = new Wire(project, await Tailwind.create(), () => gitBranch(root));
   wire.update(store.get(), store.rev);
 
   let url = "";
@@ -121,7 +127,7 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
     const u = new URL(req.url ?? "/", "http://x");
     const p = decodeURIComponent(u.pathname);
 
-    if (p === "/api/ping") return json(res, { ok: true, root, pid: process.pid });
+    if (p === "/api/ping") return json(res, { ok: true, root, project, branch: gitBranch(root), url, pid: process.pid });
     if (p === "/api/exec") {
       if (req.method !== "POST") return deny(res, 405, "Use POST.");
       if (!originOk(req) || !tokenOk(req)) return deny(res, 403, "Missing or wrong token.");
@@ -174,7 +180,7 @@ export async function startServer(root: string, preferredPort = 6060): Promise<P
 
   port = await listen(server, preferredPort);
   url = `http://localhost:${port}`;
-  const info: ServerInfo = { port, pid: process.pid, url, root, token };
+  const info: ServerInfo = { port, pid: process.pid, url, root, project, branch: gitBranch(root), token };
   fs.rmSync(lockFile(root), { force: true });
   fs.writeFileSync(lockFile(root), JSON.stringify(info), { mode: 0o600 });
 
@@ -197,7 +203,11 @@ function listen(server: http.Server, port: number, tries = 20): Promise<number> 
   return new Promise((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException) => {
       server.off("listening", onListening);
-      if (err.code === "EADDRINUSE" && tries > 1) resolve(listen(server, port + 1, tries - 1));
+      if (err.code === "EADDRINUSE" && tries > 1) {
+        let next = port + 1;
+        while (!portAllowed(next)) next++;
+        resolve(listen(server, next, tries - 1));
+      }
       else reject(err);
     };
     const onListening = () => {
