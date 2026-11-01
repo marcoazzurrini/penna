@@ -20,11 +20,14 @@ export class Wire {
   private pages = new Map<string, PageState>();
   private tailwind: Tailwind;
   private project: string;
+  private branch: () => string | null;
   /** The stylesheet for the current document. */
   css = "";
 
-  constructor(project: string, tailwind: Tailwind) {
+  /** `branch` returns the checked-out git branch, read each time a message is built. */
+  constructor(project: string, tailwind: Tailwind, branch: () => string | null = () => null) {
     this.project = project;
+    this.branch = branch;
     this.tailwind = tailwind;
   }
 
@@ -72,6 +75,7 @@ export class Wire {
     return {
       t: "doc",
       project: this.project,
+      branch: this.branch() ?? undefined,
       rev,
       full,
       variables: doc.variables ?? {},

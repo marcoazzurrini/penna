@@ -15,15 +15,27 @@ An agent-first design canvas that lives in your repo, like Storybook does.
 Requires Node 22.18 or later. Screenshots use your installed Google Chrome.
 
 ```sh
+npm i -g @marcoazzurrini/penna                        # installs the penna command
 cd your-project
-npx @marcoazzurrini/penna init                                   # creates .penna/
-claude mcp add penna -- npx -y @marcoazzurrini/penna mcp         # gives Claude Code the execute tool
-npx @marcoazzurrini/penna                                        # opens the viewer at http://localhost:6060
+penna init                                            # creates .penna/
+claude mcp add --scope project penna -- penna mcp     # gives Claude Code the tools; commit .mcp.json
+penna --open                                          # opens the viewer
 ```
 
-Install it globally if you prefer a short command: `npm i -g @marcoazzurrini/penna`, then run `penna`.
+A global install starts in a fraction of a second. `npx -y @marcoazzurrini/penna mcp` also works, but npx checks the registry each time it starts.
 
-Other MCP clients: run `npx -y @marcoazzurrini/penna mcp` from the project folder over stdio. Agents without MCP can use the CLI: `penna exec -f design 'Print(Tree())'`.
+Other MCP clients: run `penna mcp` from the project folder over stdio. Agents without MCP can use the CLI: `penna exec 'Print(Tree())'`.
+
+## Worktrees and ports
+
+Every folder with its own `.penna/`, such as each git worktree of a repo, gets its own server and viewer.
+
+- The port comes from the folder path, in the range 6100–6999, so a worktree keeps the same URL across restarts. `--port N` overrides it.
+- `penna url` prints this folder's URL and starts the viewer in the background if needed. `penna ls` lists the viewers of every worktree.
+- The viewer's title shows the repo and branch, such as `penna · app · feat/login`.
+- Agents call the `status` MCP tool for the URL, and every `execute` result ends with it. The MCP starts the viewer when the session starts, so the first call is fast.
+- The `.penna/` search stops at the git root, so a worktree nested inside another checkout never edits that checkout's designs.
+- A second session in the same folder reuses the running server, found through `.penna/.server.json`.
 
 ## Viewer
 
@@ -39,7 +51,7 @@ See [skill/SKILL.md](skill/SKILL.md), an [Agent Skill](https://agentskills.io). 
 
 ## How it works
 
-- `penna dev` runs a small Node server. It owns the documents, writes `.penna/*.json`, and pushes changes to the viewer over a WebSocket.
+- `penna dev` runs a small Node server, one per project folder. It owns the documents, writes `.penna/*.json`, and pushes changes to the viewer over a WebSocket.
 - `execute` snippets run against a copy of the document. A failed call changes nothing and can be fixed with small find/replace edits instead of resending it.
 - Screenshots and layout checks use a headless Chrome (via `playwright-core`) that runs the same renderer as the viewer.
 - The viewer moves the whole canvas with one CSS transform, skips off-screen screens with `content-visibility`, and only re-renders screens whose JSON changed.

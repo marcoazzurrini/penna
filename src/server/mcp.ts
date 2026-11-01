@@ -3,18 +3,30 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { ExecClient } from "./client.ts";
+import { ExecClient, listServers } from "./client.ts";
 import { pkgPath } from "./paths.ts";
+import { gitBranch, repoName } from "./project.ts";
 
 export async function runMcp(root: string) {
   const skillDir = pkgPath("skill");
   const client = new ExecClient(root);
   const { version } = JSON.parse(fs.readFileSync(pkgPath("package.json"), "utf8")) as { version: string };
+  const branch = gitBranch(root);
+  const where = `${root}${branch ? ` (branch ${branch})` : ""}`;
   // Keep what loads into every session short; the full skill is one read_skill call away.
   const server = new McpServer(
     { name: "penna", version },
-    { instructions: "penna is this project's design canvas. Designs live in .penna/ and render as HTML/CSS. For any UI design work, call read_skill once, then use execute." },
+    {
+      instructions:
+        `penna is this project's design canvas. Designs live in .penna/ and render as HTML/CSS. For any UI design work, call read_skill once, then use execute. ` +
+        `This session's canvas is ${where}. Each git worktree has its own canvas and viewer. ` +
+        `Call status for the viewer URL; never guess the port.`,
+    },
   );
+  const viewerLine = (url: string) => {
+    const b = gitBranch(root);
+    return `Viewer: ${url}${b ? ` (${repoName(root)} · ${b})` : ""}`;
+  };
 
   server.registerTool(
     "read_skill",
@@ -35,6 +47,29 @@ export async function runMcp(root: string) {
   );
 
   server.registerTool(
+    "status",
+    {
+      description:
+        "Show this project's viewer URL, folder, and git branch, and the penna viewers of the repo's other worktrees. Starts the viewer if it is not running. Use it to open or share the canvas; never guess the port.",
+      inputSchema: {},
+    },
+    async () => {
+      const { info, local } = await client.server();
+      const lines = [
+        viewerLine(info.url),
+        `Root: ${root}`,
+        `Server: pid ${info.pid}${local ? " (inside this MCP process; it stops when the session ends)" : ""}`,
+      ];
+      const others = (await listServers(root)).filter((w) => !w.current);
+      if (others.length) {
+        lines.push("Other worktrees:");
+        for (const w of others) lines.push(`- ${w.branch ?? "(no branch)"}: ${w.server?.url ?? "not running"}  ${w.root}`);
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.registerTool(
     "execute",
     {
       description:
@@ -50,7 +85,9 @@ export async function runMcp(root: string) {
     },
     async (args) => {
       const r = await client.exec(args);
-      const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: r.text }];
+      const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
+        { type: "text", text: `${r.text}\n\n${viewerLine(r.info.url)}` },
+      ];
       for (const s of r.shots) {
         content.push({ type: "text", text: `Screenshot: ${s.name} (${s.id})` });
         content.push({ type: "image", data: s.png, mimeType: "image/png" });
@@ -61,6 +98,9 @@ export async function runMcp(root: string) {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Start the viewer now, so the first call is fast and status has a URL at once. Only
+  // for projects that use penna: starting a server would create .penna/ anywhere else.
+  if (fs.existsSync(path.join(root, ".penna"))) client.server().catch((err) => process.stderr.write(`penna: ${err?.message ?? err}\n`));
   const shutdown = async () => {
     await client.close();
     process.exit(0);

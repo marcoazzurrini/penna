@@ -14,11 +14,16 @@ export interface Selection {
   ids: string[];
 }
 
-/** Find the project root: the nearest ancestor with a .penna folder, else `cwd`. */
+/**
+ * Find the project root: the nearest ancestor with a .penna folder. The search stops at
+ * the git root, so a worktree inside another checkout never uses that checkout's canvas.
+ * Without a .penna folder, the root is the git root, else `cwd`.
+ */
 export function findRoot(cwd: string): string {
   let dir = path.resolve(cwd);
   for (;;) {
     if (fs.existsSync(path.join(dir, ".penna"))) return dir;
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
     const up = path.dirname(dir);
     if (up === dir) return path.resolve(cwd);
     dir = up;

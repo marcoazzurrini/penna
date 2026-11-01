@@ -99,10 +99,12 @@ function startViewer() {
 
   function onMessage(msg: ServerMsg) {
     if (msg.t === "doc") {
-      if (msg.project !== project) {
+      const label = msg.branch ? `${msg.project} · ${msg.branch}` : msg.project;
+      if (msg.project !== project || projectEl.textContent !== label) {
         project = msg.project;
-        projectEl.textContent = project;
-        document.title = `penna · ${project}`;
+        projectEl.textContent = label;
+        projectEl.title = label;
+        document.title = `penna · ${label}`;
       }
       const first = !doc;
       if (msg.full) frames.clear();

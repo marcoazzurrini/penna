@@ -2,24 +2,33 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { ExecClient, findServer, spawnServer } from "./server/client.ts";
+import { ExecClient, findServer, listServers, spawnServer } from "./server/client.ts";
 import { startServer } from "./server/http.ts";
 import { runMcp } from "./server/mcp.ts";
 import { pkgPath } from "./server/paths.ts";
+import { defaultPort } from "./server/project.ts";
 import { findRoot, Store } from "./server/store.ts";
 
 const HELP = `penna: an agent-first design canvas that lives in your repo.
 
 Usage:
   penna [dev] [--port N] [--open]   Start the viewer for this project
+  penna url                          Print this project's viewer URL, starting it in the background if needed
+  penna ls                           List the viewers of every git worktree of this repo
   penna mcp                          Run the MCP server (stdio) for agents
   penna exec [CODE | -]              Run a snippet (reads stdin when CODE is - or missing)
   penna init                         Create .penna/ and print agent setup
   penna skill                        Print the agent skill (SKILL.md)
+  penna --version                    Print the version
+
+Each folder gets its own port, derived from its path, so every git worktree has a
+separate viewer whose URL stays the same across restarts.
 `;
 
 async function main() {
   const args = process.argv.slice(2);
+  if (args.some((a) => a === "-h" || a === "--help")) return void process.stdout.write(HELP);
+  if (args[0] === "-v" || args[0] === "--version") return void console.log(version());
   const cmd = args[0] && !args[0].startsWith("-") ? args.shift()! : "dev";
   const flag = (name: string) => {
     const i = args.indexOf(name);
@@ -29,12 +38,24 @@ async function main() {
     return v && !v.startsWith("-") ? v : "";
   };
   const root = findRoot(process.cwd());
+  // Commands that run until stopped must not swallow a mistyped flag silently.
+  const noExtraArgs = () => {
+    if (!args.length) return;
+    process.stderr.write(`Unknown argument "${args[0]}".\n\n${HELP}`);
+    process.exit(1);
+  };
 
   switch (cmd) {
     case "dev": {
-      const port = Number(flag("--port") ?? 6060);
+      const portFlag = flag("--port");
       const open = flag("--open") !== undefined;
       const quiet = flag("--quiet") !== undefined;
+      noExtraArgs();
+      const port = portFlag ? Number(portFlag) : defaultPort(root);
+      if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        process.stderr.write(`Invalid port "${portFlag}".\n`);
+        process.exit(1);
+      }
       const existing = await findServer(root);
       if (existing) {
         console.log(`penna is already running for this project: ${existing.url}`);
@@ -55,7 +76,25 @@ async function main() {
       process.on("SIGTERM", stop);
       return;
     }
+    case "url": {
+      noExtraArgs();
+      const info = (await findServer(root)) ?? (await spawnServer(root));
+      console.log(info.url);
+      return;
+    }
+    case "ls":
+    case "list": {
+      noExtraArgs();
+      const list = await listServers(root);
+      const width = Math.max(...list.map((w) => (w.branch ?? "-").length));
+      for (const w of list) {
+        const mark = w.current ? "*" : " ";
+        console.log(`${mark} ${(w.branch ?? "-").padEnd(width)}  ${(w.server?.url ?? "not running").padEnd(22)}  ${w.root}`);
+      }
+      return;
+    }
     case "mcp":
+      noExtraArgs();
       return runMcp(root);
     case "exec": {
       let code = args.join(" ");
@@ -79,11 +118,14 @@ async function main() {
       new Store(root).ensureDir();
       console.log(`Created ${path.join(root, ".penna")}/
 
-Add penna to Claude Code:
-  claude mcp add penna -- npx -y @marcoazzurrini/penna mcp
+Install penna once, so agents start it without an npx registry check:
+  npm i -g @marcoazzurrini/penna
 
-Or any MCP client: command "npx", args ["-y", "@marcoazzurrini/penna", "mcp"], run from this project.
-Then run "npx @marcoazzurrini/penna" to open the viewer.`);
+Add it to Claude Code for this repo and all its worktrees (writes .mcp.json; commit it):
+  claude mcp add --scope project penna -- penna mcp
+
+Or any MCP client: command "penna", args ["mcp"], run from this project.
+Then run "penna --open" to open the viewer, or "penna ls" to see every worktree's viewer.`);
       return;
     }
     case "skill":
@@ -91,14 +133,16 @@ Then run "npx @marcoazzurrini/penna" to open the viewer.`);
       process.stdout.write(fs.readFileSync(pkgPath("skill", "SKILL.md"), "utf8"));
       return;
     case "help":
-    case "--help":
-    case "-h":
       process.stdout.write(HELP);
       return;
     default:
       process.stderr.write(`Unknown command "${cmd}".\n\n${HELP}`);
       process.exit(1);
   }
+}
+
+function version(): string {
+  return (JSON.parse(fs.readFileSync(pkgPath("package.json"), "utf8")) as { version: string }).version;
 }
 
 function openBrowser(url: string) {

@@ -9,7 +9,10 @@ import type { PennaNode } from "./types.ts";
  */
 export interface DocMessage {
   t: "doc";
+  /** Repository name. */
   project: string;
+  /** Checked-out git branch, so worktrees of one repo can be told apart. */
+  branch?: string;
   rev: number;
   /** `nodes` holds every top-level node, so the viewer should drop the ones it has. */
   full: boolean;
