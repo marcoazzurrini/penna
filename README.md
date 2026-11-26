@@ -53,6 +53,8 @@ See [skill/SKILL.md](skill/SKILL.md), an [Agent Skill](https://agentskills.io). 
 
 - `penna dev` runs a small Node server, one per project folder. It owns the documents, writes `.penna/*.json`, and pushes changes to the viewer over a WebSocket.
 - `execute` snippets run against a copy of the document. A failed call changes nothing and can be fixed with small find/replace edits instead of resending it.
+- Calls run one at a time, and a call copies only the pages it changes, so its cost follows the size of the edit, not of the project.
+- A file that is not a valid design, such as one with git conflict markers, is never overwritten or deleted. The viewer and every `execute` result say what is wrong with it until it is fixed.
 - Screenshots and layout checks use a headless Chrome (via `playwright-core`) that runs the same renderer as the viewer.
 - The viewer moves the whole canvas with one CSS transform, skips off-screen screens with `content-visibility`, and only re-renders screens whose JSON changed.
 

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ExecRequest } from "./execute.ts";
-import { lockFile, startServer, toWire, type PennaServer, type ServerInfo, type WireResult } from "./http.ts";
+import { AlreadyRunning, lockFile, startServer, toWire, type PennaServer, type ServerInfo, type WireResult } from "./http.ts";
 import { gitBranch, gitRoot, worktrees } from "./project.ts";
 
 /** The running server for this project, if any. */
@@ -95,8 +95,15 @@ export class ExecClient {
       .finally(() => {
         this.starting = null;
       });
-    const local = await this.starting;
-    return { info: local.info, local };
+    try {
+      const local = await this.starting;
+      return { info: local.info, local };
+    } catch (err) {
+      // Another process started the project's server at the same moment. Use that one.
+      const other = err instanceof AlreadyRunning ? await findServer(this.root) : null;
+      if (!other) throw err;
+      return { info: other, local: null };
+    }
   }
 
   async exec(req: ExecRequest): Promise<WireResult & { info: ServerInfo }> {
@@ -106,6 +113,8 @@ export class ExecClient {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${info.token}` },
       body: JSON.stringify(req),
+      // A little longer than the server allows a snippet and its screenshots.
+      signal: AbortSignal.timeout(180_000),
     });
     if (!res.ok) throw new Error(`penna server refused the call (${res.status}): ${await res.text()}`);
     return { ...((await res.json()) as WireResult), info };

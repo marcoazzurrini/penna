@@ -273,6 +273,30 @@ body {
 #select-box {
   outline: 2px solid var(--ui-accent);
 }
+/* Files in .penna/ that could not be used. */
+#problems {
+  position: absolute;
+  inset: 12px 12px auto;
+  z-index: 3;
+  padding: 10px 12px;
+  border: 1px solid light-dark(oklch(0.8 0.12 60), oklch(0.5 0.1 60));
+  border-radius: 8px;
+  background: light-dark(oklch(0.97 0.04 85), oklch(0.3 0.05 70));
+  color: var(--ui-fg);
+  font: 13px/1.45 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+#problems[hidden] {
+  display: none;
+}
+#problems p {
+  margin: 0;
+}
+#problems p + p {
+  margin-top: 6px;
+}
+
 #empty {
   position: absolute;
   inset: 0;

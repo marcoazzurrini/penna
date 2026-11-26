@@ -12,14 +12,21 @@ export function isPage(x: PennaNode | PennaPage): x is PennaPage {
   return !("type" in x);
 }
 
+/** Anything that finds a node by id. A `Map<string, Located>` is one. */
+export interface NodeLookup {
+  get(id: string): Located | undefined;
+}
+
+/** Add `node` and its descendants to `map`. */
+export function indexInto(map: Map<string, Located>, node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage, top: PennaNode): void {
+  map.set(node.id, { node, parent, page, top });
+  if (node.children) for (const c of node.children) indexInto(map, c, node, page, top);
+}
+
 /** Map of every node id in the document to its location. */
 export function indexDoc(doc: PennaDoc): Map<string, Located> {
   const map = new Map<string, Located>();
-  const visit = (node: PennaNode, parent: PennaNode | PennaPage, page: PennaPage, top: PennaNode) => {
-    map.set(node.id, { node, parent, page, top });
-    if (node.children) for (const c of node.children) visit(c, node, page, top);
-  };
-  for (const page of doc.pages) for (const n of page.children) visit(n, page, page, n);
+  for (const page of doc.pages) for (const n of page.children) indexInto(map, n, page, page, n);
   return map;
 }
 
@@ -27,10 +34,10 @@ export function indexDoc(doc: PennaDoc): Map<string, Located> {
 export function findDescendant(root: PennaNode | PennaPage, key: string): PennaNode | undefined {
   // Breadth-first so the shallowest match wins, which is what people expect from names.
   const queue = [...(root.children ?? [])];
-  while (queue.length) {
-    const n = queue.shift()!;
+  for (let i = 0; i < queue.length; i++) {
+    const n = queue[i];
     if (n.id === key || n.name === key) return n;
-    if (n.children) queue.push(...n.children);
+    if (n.children) for (const c of n.children) queue.push(c);
   }
   return undefined;
 }
@@ -68,7 +75,7 @@ function prefixIds(node: PennaNode, prefix: string): PennaNode {
  * `instanceId/originalId` so they stay addressable. Nested refs are left in place;
  * renderers expand them when they reach them.
  */
-export function expandRef(inst: PennaNode, index: Map<string, Located>): PennaNode | undefined {
+export function expandRef(inst: PennaNode, index: NodeLookup): PennaNode | undefined {
   const comp = inst.ref ? index.get(inst.ref)?.node : undefined;
   if (!comp) return undefined;
   const root: PennaNode = {
@@ -101,7 +108,7 @@ export function walk(nodes: PennaNode[], fn: (n: PennaNode, depth: number, paren
 }
 
 /** Find a component by id or name, preferring nodes marked as components. */
-export function findComponent(doc: PennaDoc, key: string, index?: Map<string, Located>): PennaNode | undefined {
+export function findComponent(doc: PennaDoc, key: string, index?: NodeLookup): PennaNode | undefined {
   const byId = (index ?? indexDoc(doc)).get(key)?.node;
   if (byId) return byId;
   let comp: PennaNode | undefined;
@@ -114,4 +121,59 @@ export function findComponent(doc: PennaDoc, key: string, index?: Map<string, Lo
     });
   }
   return comp ?? other;
+}
+
+/** Ids of the components that `node` and its descendants instantiate directly. */
+export function refsIn(node: PennaNode, out: string[] = []): string[] {
+  if (node.type === "ref" && node.ref) out.push(node.ref);
+  if (node.overrides) {
+    for (const k in node.overrides) {
+      const patch = node.overrides[k];
+      if (typeof patch.ref === "string") out.push(patch.ref);
+      if (patch.children) for (const c of patch.children) refsIn(c, out);
+    }
+  }
+  if (node.children) for (const c of node.children) refsIn(c, out);
+  return out;
+}
+
+/**
+ * The smallest document that renders `id` (a page or a node) the same way `doc` does:
+ * the page or the top-level node that holds it, plus every top-level node holding a
+ * component it uses, directly or through other components.
+ */
+export function renderSubset(doc: PennaDoc, index: NodeLookup, id: string): PennaDoc {
+  const keep = new Map<string, Set<PennaNode>>();
+  const add = (loc: Located) => {
+    let set = keep.get(loc.page.id);
+    if (!set) keep.set(loc.page.id, (set = new Set()));
+    set.add(loc.top);
+  };
+  const queue: string[] = [];
+  const page = doc.pages.find((p) => p.id === id);
+  if (page) {
+    keep.set(page.id, new Set(page.children));
+    for (const n of page.children) refsIn(n, queue);
+  } else {
+    const loc = index.get(id);
+    if (loc) {
+      add(loc);
+      refsIn(loc.node, queue);
+    }
+  }
+  const seen = new Set<string>();
+  while (queue.length) {
+    const ref = queue.pop()!;
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const loc = index.get(ref);
+    if (!loc) continue;
+    add(loc);
+    refsIn(loc.node, queue);
+  }
+  const pages = doc.pages.flatMap((p) => {
+    const set = keep.get(p.id);
+    return set ? [{ id: p.id, name: p.name, children: p.children.filter((n) => set.has(n)) }] : [];
+  });
+  return { version: 2, variables: doc.variables, themes: doc.themes, pages };
 }

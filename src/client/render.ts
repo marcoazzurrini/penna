@@ -1,10 +1,10 @@
 import { styleToCss, variablesToCss } from "../shared/style.ts";
-import { expandRef, type Located } from "../shared/tree.ts";
+import { expandRef, type NodeLookup } from "../shared/tree.ts";
 import type { PennaDoc, PennaNode } from "../shared/types.ts";
 
 export interface RenderCtx {
   doc: PennaDoc;
-  index: Map<string, Located>;
+  index: NodeLookup;
 }
 
 const MAX_REF_DEPTH = 12;
@@ -85,7 +85,8 @@ export function renderNode(node: PennaNode, ctx: RenderCtx, depth = 0): HTMLElem
 
 // Design files can come from anyone (a pull request, a download), and the viewer runs on
 // localhost. Never let their SVG run script: parse it as XML and keep only inert content.
-const UNSAFE_TAGS = new Set(["script", "foreignobject", "iframe", "object", "embed", "handler", "listener"]);
+// A <style> inside inline SVG applies to the whole page, so it could restyle the viewer.
+const UNSAFE_TAGS = new Set(["script", "style", "foreignobject", "iframe", "object", "embed", "handler", "listener"]);
 const ANIMATION_TAGS = new Set(["animate", "set", "animatemotion", "animatetransform"]);
 const LINK_ATTRS = new Set(["href", "xlink:href", "src", "action", "formaction"]);
 
@@ -124,24 +125,41 @@ function missing(node: PennaNode): HTMLElement {
   return el;
 }
 
+// Unchanged top-level nodes keep their objects between updates, so each is searched once.
+const familiesIn = new WeakMap<PennaNode, string[]>();
+
+function addFamily(found: Set<string>, value: unknown) {
+  if (typeof value !== "string") return;
+  const first = value.split(",")[0].trim().replace(/^["']|["']$/g, "");
+  if (first && !first.startsWith("var(") && !GENERIC.has(first.toLowerCase())) found.add(first);
+}
+
+function nodeFamilies(top: PennaNode): string[] {
+  let cached = familiesIn.get(top);
+  if (!cached) {
+    const found = new Set<string>();
+    const visit = (n: PennaNode) => {
+      addFamily(found, n.style?.fontFamily);
+      n.spans?.forEach((s) => addFamily(found, s.style?.fontFamily));
+      for (const m of n.class?.matchAll(/font-\['?([^\]']+)'?\]/g) ?? []) addFamily(found, m[1].replace(/_/g, " "));
+      if (n.overrides) for (const k in n.overrides) addFamily(found, n.overrides[k].style?.fontFamily);
+      n.children?.forEach(visit);
+    };
+    visit(top);
+    familiesIn.set(top, (cached = [...found]));
+  }
+  return cached;
+}
+
 /** Font families used anywhere in the document, for loading from Google Fonts. */
 export function fontFamilies(doc: PennaDoc): string[] {
   const found = new Set<string>();
-  const add = (value: unknown) => {
-    if (typeof value !== "string") return;
-    const first = value.split(",")[0].trim().replace(/^["']|["']$/g, "");
-    if (first && !first.startsWith("var(") && !GENERIC.has(first.toLowerCase())) found.add(first);
+  for (const p of doc.pages) for (const n of p.children) for (const f of nodeFamilies(n)) found.add(f);
+  const fromVariable = (v: unknown) => {
+    if (typeof v === "string" && /^\s*["']?[A-Z]/.test(v) && !v.includes("(")) addFamily(found, v);
   };
-  const visit = (n: PennaNode) => {
-    add(n.style?.fontFamily);
-    n.spans?.forEach((s) => add(s.style?.fontFamily));
-    for (const m of n.class?.matchAll(/font-\['?([^\]']+)'?\]/g) ?? []) add(m[1].replace(/_/g, " "));
-    if (n.overrides) for (const k in n.overrides) add(n.overrides[k].style?.fontFamily);
-    n.children?.forEach(visit);
-  };
-  doc.pages.forEach((p) => p.children.forEach(visit));
-  for (const v of Object.values(doc.variables ?? {})) if (/^\s*["']?[A-Z]/.test(v) && !v.includes("(")) add(v);
-  for (const t of Object.values(doc.themes ?? {})) for (const v of Object.values(t)) if (/^\s*["']?[A-Z]/.test(v) && !v.includes("(")) add(v);
+  Object.values(doc.variables ?? {}).forEach(fromVariable);
+  for (const t of Object.values(doc.themes ?? {})) Object.values(t).forEach(fromVariable);
   return [...found].sort();
 }
 

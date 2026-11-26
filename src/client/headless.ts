@@ -1,7 +1,7 @@
 import { variablesToCss } from "../shared/style.ts";
 import { indexDoc } from "../shared/tree.ts";
 import type { PennaDoc } from "../shared/types.ts";
-import { fontFamilies, loadFonts, renderNode, setTailwindCss } from "./render.ts";
+import { fontFamilies, loadFonts, renderNode, safeSvg, setTailwindCss } from "./render.ts";
 
 // Render API driven by the server's headless browser for screenshots and layout checks.
 
@@ -24,9 +24,10 @@ async function settle(stage: HTMLElement) {
   await nextFrame();
 }
 
-async function mount(doc: PennaDoc, css: string, pageId: string, nodeId: string): Promise<HTMLElement> {
+/** `css` is null when the stylesheet from the last call still applies. */
+async function mount(doc: PennaDoc, css: string | null, nodeId: string): Promise<HTMLElement> {
   document.getElementById("stage")?.remove();
-  setTailwindCss(css);
+  if (css !== null) setTailwindCss(css);
   const stage = document.createElement("div");
   stage.id = "stage";
   stage.className = "pn-root";
@@ -62,15 +63,14 @@ async function mount(doc: PennaDoc, css: string, pageId: string, nodeId: string)
   }
   const loc = index.get(nodeId);
   if (!loc) throw new Error(`No node ${nodeId}`);
-  void pageId;
   const el = renderNode({ ...loc.node, hidden: false }, ctx);
   if (el) stage.appendChild(el);
   await settle(stage);
   return stage;
 }
 
-async function render(doc: PennaDoc, css: string, pageId: string, nodeId: string, scale?: number) {
-  const stage = await mount(doc, css, pageId, nodeId);
+async function render(doc: PennaDoc, css: string | null, nodeId: string, scale?: number) {
+  const stage = await mount(doc, css, nodeId);
   const r = stage.getBoundingClientRect();
   const s = scale ?? Math.min(1, MAX_SIDE / Math.max(r.width, r.height, 1));
   if (s !== 1) {
@@ -88,8 +88,8 @@ interface Rect {
   h: number;
 }
 
-async function layout(doc: PennaDoc, css: string, pageId: string, nodeId: string) {
-  const stage = await mount(doc, css, pageId, nodeId);
+async function layout(doc: PennaDoc, css: string | null, nodeId: string) {
+  const stage = await mount(doc, css, nodeId);
   const root = stage.firstElementChild as HTMLElement | null;
   if (!root) return { width: 0, height: 0, nodes: [], problems: ["Node is hidden or empty."] };
   const origin = root.getBoundingClientRect();
@@ -138,5 +138,11 @@ async function layout(doc: PennaDoc, css: string, pageId: string, nodeId: string
 
 export function startHeadless() {
   document.body.classList.add("headless");
-  (window as unknown as { __penna: unknown }).__penna = { ready: true, render, layout };
+  (window as unknown as { __penna: unknown }).__penna = {
+    ready: true,
+    render,
+    layout,
+    // For tests of the sanitizer, which needs a real DOM.
+    sanitizeSvg: (markup: string) => safeSvg(markup)?.outerHTML ?? null,
+  };
 }

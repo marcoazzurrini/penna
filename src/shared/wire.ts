@@ -20,6 +20,8 @@ export interface DocMessage {
   focus?: string;
   variables: Record<string, string>;
   themes?: Record<string, Record<string, string>>;
+  /** Files in `.penna/` that could not be used, each with what is wrong. */
+  problems?: string[];
   pages: { id: string; name: string; nodes: string[] }[];
   nodes: { page: string; hash: string; node: PennaNode }[];
   /** The compiled Tailwind stylesheet. Only sent when it changed. */

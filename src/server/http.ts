@@ -42,6 +42,26 @@ export interface ServerInfo {
 
 const MAX_BODY = 32 * 1024 * 1024;
 
+/** Thrown by `startServer` when another process already serves this project. */
+export class AlreadyRunning extends Error {
+  readonly port: number;
+
+  constructor(port: number) {
+    super(`penna is already running for this project on port ${port}.`);
+    this.port = port;
+  }
+}
+
+/** Whether a penna server for `root` answers on `port`. */
+async function servesRoot(port: number, root: string): Promise<boolean> {
+  try {
+    const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(1000) });
+    return ((await res.json()) as { root?: string }).root === root;
+  } catch {
+    return false;
+  }
+}
+
 export interface PennaServer {
   info: ServerInfo;
   store: Store;
@@ -62,7 +82,11 @@ export function lockFile(root: string) {
   return path.join(root, ".penna", ".server.json");
 }
 
-/** Start the server. The port defaults to one derived from `root`; pass 0 for any free port. */
+/**
+ * Start the server. The port defaults to one derived from `root`; pass 0 for any free port.
+ * Throws `AlreadyRunning` if a port it tries is held by a penna server for the same
+ * project, which happens when two processes start at once.
+ */
 export async function startServer(root: string, preferredPort = defaultPort(root)): Promise<PennaServer> {
   const store = new Store(root);
   store.ensureDir();
@@ -72,17 +96,17 @@ export async function startServer(root: string, preferredPort = defaultPort(root
   const iconDir = path.join(resolveDep("lucide-static"), "icons");
   const project = repoName(root);
   const wire = new Wire(project, await Tailwind.create(), () => gitBranch(root));
-  wire.update(store.get(), store.rev);
+  wire.update(store.get(), store.rev, undefined, store.problems());
 
   let url = "";
-  const headless = new Headless(() => url, () => wire.css);
+  const headless = new Headless(() => url, (doc) => wire.cssFor(doc));
   const executor = new Executor(store, headless, iconDir, () => url);
 
   const clients = new Set<WebSocket>();
   let focus: string | null = null;
 
   store.on("change", (files: Set<string>) => {
-    const msg = wire.update(store.get(), store.rev, files);
+    const msg = wire.update(store.get(), store.rev, files, store.problems());
     if (focus) msg.focus = focus;
     focus = null;
     const text = JSON.stringify(msg);
@@ -137,8 +161,10 @@ export async function startServer(root: string, preferredPort = defaultPort(root
     }
     if (p === "/fonts.css") {
       const families = (u.searchParams.get("f") ?? "").split("|").filter(Boolean);
-      res.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "max-age=3600" });
-      return res.end(await fontsCss(families));
+      const fonts = await fontsCss(families);
+      // An answer cut short by a network failure must not stick in the browser's cache.
+      res.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": fonts.complete ? "max-age=3600" : "no-store" });
+      return res.end(fonts.css);
     }
     if (p.startsWith("/icon/")) {
       const name = path.basename(p.slice(6), ".svg");
@@ -172,13 +198,22 @@ export async function startServer(root: string, preferredPort = defaultPort(root
       }
       if (msg.t === "view" && typeof msg.page === "string") store.viewing = msg.page;
       else if (msg.t === "select") store.selection = { page: String(msg.page ?? ""), ids: Array.isArray(msg.ids) ? msg.ids.map(String) : [] };
-      else if (msg.t === "sizes") for (const [id, s] of Object.entries(msg.sizes ?? {})) store.sizes.set(id, s);
+      else if (msg.t === "sizes" && msg.sizes && typeof msg.sizes === "object") {
+        for (const [id, s] of Object.entries(msg.sizes)) {
+          if (Array.isArray(s) && Number.isFinite(s[0]) && Number.isFinite(s[1])) store.sizes.set(id, [s[0], s[1]]);
+        }
+      }
       else if (msg.t === "undo") store.undo();
       else if (msg.t === "redo") store.redo();
     });
   });
 
-  port = await listen(server, preferredPort);
+  try {
+    port = await listen(server, preferredPort, root);
+  } catch (err) {
+    store.unwatch();
+    throw err;
+  }
   url = `http://localhost:${port}`;
   const info: ServerInfo = { port, pid: process.pid, url, root, project, branch: gitBranch(root), token };
   fs.rmSync(lockFile(root), { force: true });
@@ -199,16 +234,18 @@ export async function startServer(root: string, preferredPort = defaultPort(root
   return { info, store, exec, close };
 }
 
-function listen(server: http.Server, port: number, tries = 20): Promise<number> {
+function listen(server: http.Server, port: number, root: string, tries = 20): Promise<number> {
   return new Promise((resolve, reject) => {
-    const onError = (err: NodeJS.ErrnoException) => {
+    const onError = async (err: NodeJS.ErrnoException) => {
       server.off("listening", onListening);
-      if (err.code === "EADDRINUSE" && tries > 1) {
-        let next = port + 1;
-        while (!portAllowed(next)) next++;
-        resolve(listen(server, next, tries - 1));
-      }
-      else reject(err);
+      if (err.code !== "EADDRINUSE") return reject(err);
+      // Two processes that start together both find no server and race for the port.
+      // The loser must use the winner's server, not open a second one next to it.
+      if (await servesRoot(port, root)) return reject(new AlreadyRunning(port));
+      if (tries <= 1) return reject(err);
+      let next = port + 1;
+      while (!portAllowed(next)) next++;
+      resolve(listen(server, next, root, tries - 1));
     };
     const onListening = () => {
       server.off("error", onError);
