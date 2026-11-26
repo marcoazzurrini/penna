@@ -88,7 +88,7 @@ export function expandRef(inst: PennaNode, index: NodeLookup): PennaNode | undef
     children: comp.children?.map((c) => prefixIds(c, inst.id)),
   };
   if (inst.style) root.style = { ...(comp.style ?? {}), ...inst.style };
-  for (const k of ["class", "text", "src", "icon", "svg", "theme", "hidden"] as const) {
+  for (const k of ["class", "text", "src", "icon", "svg", "theme", "hidden", "state", "on"] as const) {
     if (inst[k] !== undefined) (root as unknown as Record<string, unknown>)[k] = inst[k];
   }
   if (inst.overrides) {
@@ -175,5 +175,5 @@ export function renderSubset(doc: PennaDoc, index: NodeLookup, id: string): Penn
     const set = keep.get(p.id);
     return set ? [{ id: p.id, name: p.name, children: p.children.filter((n) => set.has(n)) }] : [];
   });
-  return { version: 2, variables: doc.variables, themes: doc.themes, pages };
+  return { version: 2, variables: doc.variables, themes: doc.themes, keyframes: doc.keyframes, pages };
 }

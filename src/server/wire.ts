@@ -92,6 +92,7 @@ export class Wire {
       full,
       variables: doc.variables ?? {},
       themes: doc.themes,
+      keyframes: doc.keyframes,
       problems: this.problems.length ? this.problems : undefined,
       pages: doc.pages.map((p) => ({ id: p.id, name: p.name, nodes: p.children.map((n) => n.id) })),
       nodes,

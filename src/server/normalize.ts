@@ -125,6 +125,19 @@ export class Normalizer {
         for (const k in v) ov[k] = this.patch((v as Record<string, unknown>)[k]);
         return ov;
       }
+      case "on": {
+        if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`on must be an object like {click: {target, state}}, got ${show(v)}.`);
+        // One action or a list of them; stored as a list.
+        const on: Record<string, unknown[]> = {};
+        for (const event in v) {
+          const actions = (v as Record<string, unknown>)[event];
+          if (actions === null || actions === undefined) continue;
+          on[event] = (Array.isArray(actions) ? actions : [actions]).map((a) => (a && typeof a === "object" && !Array.isArray(a) ? { ...a } : a));
+        }
+        v = on;
+        break;
+      }
+      case "state":
       case "text":
       case "name":
         // Numbers are a common, harmless slip.

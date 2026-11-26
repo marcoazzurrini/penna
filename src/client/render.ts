@@ -1,6 +1,7 @@
-import { styleToCss, variablesToCss } from "../shared/style.ts";
+import { KEYFRAME_STOP, KEYFRAMES_NAME } from "../shared/schema.ts";
+import { cssValue, kebab, styleToCss, variablesToCss } from "../shared/style.ts";
 import { expandRef, type NodeLookup } from "../shared/tree.ts";
-import type { PennaDoc, PennaNode } from "../shared/types.ts";
+import type { Keyframes, PennaDoc, PennaNode } from "../shared/types.ts";
 
 export interface RenderCtx {
   doc: PennaDoc;
@@ -22,7 +23,12 @@ export function renderNode(node: PennaNode, ctx: RenderCtx, depth = 0): HTMLElem
     if (!expanded) return missing(node);
     if (expanded.hidden) return null;
     const el = renderNode(expanded, ctx, depth + 1);
-    if (el) el.dataset.ref = node.ref;
+    if (el) {
+      el.dataset.ref = node.ref;
+      // An instance has its own name, so keep the component's for triggers that target it.
+      const component = ctx.index.get(node.ref ?? "")?.node.name;
+      if (component) el.dataset.refName = component;
+    }
     return el;
   }
 
@@ -75,6 +81,8 @@ export function renderNode(node: PennaNode, ctx: RenderCtx, depth = 0): HTMLElem
 
   el.dataset.id = node.id;
   if (node.name) el.dataset.name = node.name;
+  if (node.state) el.dataset.state = node.state;
+  if (node.on) el.dataset.on = JSON.stringify(node.on);
   if (node.class) el.className += " " + node.class;
   let css = styleToCss(node.style);
   if (node.theme && ctx.doc.themes?.[node.theme]) css = variablesToCss(ctx.doc.themes[node.theme]) + css;
@@ -169,6 +177,38 @@ const GENERIC = new Set([
   "blinkmacsystemfont", "helvetica", "helvetica neue", "arial", "georgia", "times new roman",
   "menlo", "monaco", "sf pro", "sf pro display", "sf pro text", "sf mono", "courier new",
 ]);
+
+let keyframesSheet: CSSStyleSheet | null = null;
+let keyframesKey = "null";
+
+/**
+ * Apply the project's `@keyframes`. Design files can come from anyone, so the rules are
+ * built through the CSS object model: a name or value can never close the rule and start
+ * another one. The sheet comes after Tailwind's, so a project rule wins over a built-in
+ * one with the same name.
+ */
+export function setKeyframes(keyframes: Keyframes | undefined) {
+  const key = JSON.stringify(keyframes ?? null);
+  if (key === keyframesKey) return;
+  keyframesKey = key;
+  if (!keyframesSheet) {
+    keyframesSheet = new CSSStyleSheet();
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, keyframesSheet];
+  }
+  const sheet = keyframesSheet;
+  while (sheet.cssRules.length) sheet.deleteRule(0);
+  for (const name in keyframes) {
+    if (!KEYFRAMES_NAME.test(name)) continue;
+    const rule = sheet.cssRules[sheet.insertRule(`@keyframes ${name} {}`, sheet.cssRules.length)] as CSSKeyframesRule;
+    for (const stop in keyframes[name]) {
+      if (!KEYFRAME_STOP.test(stop)) continue;
+      rule.appendRule(`${stop} {}`);
+      const frame = rule.cssRules[rule.cssRules.length - 1] as CSSKeyframeRule | undefined;
+      const style = keyframes[name][stop];
+      if (frame) for (const k in style) frame.style.setProperty(kebab(k), cssValue(k, style[k]));
+    }
+  }
+}
 
 let tailwindCss = "";
 

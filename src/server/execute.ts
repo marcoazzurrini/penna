@@ -1,8 +1,9 @@
 import vm from "node:vm";
+import type { FilmReport } from "../shared/motion.ts";
 import type { LayoutReport, Renderer } from "./headless.ts";
 import { Icons } from "./icons.ts";
 import { randomId } from "./normalize.ts";
-import { Session } from "./session.ts";
+import { Session, type FilmJob } from "./session.ts";
 import type { Store } from "./store.ts";
 
 export interface Edit {
@@ -91,6 +92,7 @@ export class Executor {
     try {
       await this.evaluate(code, session);
       if (process.env.PENNA_VERIFY_INDEX) session.work.verify();
+      session.checkTriggers();
       if (session.changed) {
         this.onCommit?.(session.work.pageId);
         this.store.commit(session.doc, session.work.touched);
@@ -106,7 +108,7 @@ export class Executor {
     for (const p of this.store.problems()) session.warn(p);
 
     const shots: Shot[] = [];
-    if (session.shotJobs.length || session.checkJobs.length) {
+    if (session.shotJobs.length || session.checkJobs.length || session.filmJobs.length) {
       const doc = session.doc;
       try {
         for (const job of session.shotJobs) {
@@ -118,6 +120,12 @@ export class Executor {
         for (const id of session.checkJobs) {
           const report = await this.renderer.layout(doc, session.work, id);
           session.print(formatProblems(session.nameOf(id), report));
+        }
+        for (const job of session.filmJobs) {
+          const name = session.nameOf(job.req.target);
+          const { report, png } = await this.renderer.film(doc, session.work, job.req, job.image);
+          if (png) shots.push({ id: job.req.target, name: `filmstrip of ${name}`, png });
+          session.print(formatFilm(name, job, report));
         }
       } catch (err) {
         session.warn(`Rendering failed: ${(err as Error).message}`);
@@ -180,6 +188,18 @@ function formatError(err: unknown): string {
   const m = e.stack?.match(/snippet\.js:(\d+)/);
   const prefix = e.name && e.name !== "Error" ? e.name + ": " : "";
   return prefix + e.message + (m ? ` (line ${m[1]})` : "");
+}
+
+function formatFilm(name: string, job: FilmJob, r: FilmReport): string {
+  const lines: string[] = [];
+  const moving = r.tracks.length + r.hidden > 0;
+  const when = r.times.map((t) => Math.round(t)).join(", ");
+  lines.push(`Motion ${name} (${job.cause}): ` + (moving ? `${Math.round(r.duration)} ms, sampled at ${when} ms` : "nothing animates"));
+  for (const t of r.tracks) lines.push(`  ${t.name} (${t.id}) ${t.property}: ${t.values.join(" → ")}`);
+  if (r.hidden) lines.push(`  ${r.hidden} more animation(s) not listed: no visible change, or over the limit.`);
+  if (r.outside && !moving) lines.push(`  ${r.outside} animation(s) ran outside ${name}.`);
+  for (const p of r.problems) lines.push("  Problem: " + p);
+  return lines.join("\n");
 }
 
 function formatProblems(name: string, r: LayoutReport): string {

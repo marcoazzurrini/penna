@@ -8,6 +8,7 @@ An agent-first design canvas that lives in your repo, like Storybook does.
 - Agents edit them through one tool, `execute`, that runs a JavaScript snippet. One call can build a whole screen.
 - Designs render as real HTML and CSS (flexbox, grid, Tailwind v4, Google Fonts, Lucide icons), so agents use what they already know.
 - A component on any page can be used on every page, so a design-system page feeds all your screens.
+- Motion is designed in the same screens, as real CSS: states, transitions, and keyframes. Agents see it as a filmstrip, and you play it in the viewer.
 - `penna` opens a light, view-only canvas on localhost: pan, zoom, pages, layers, and live updates while the agent works.
 
 ## Quick start
@@ -44,6 +45,16 @@ Every folder with its own `.penna/`, such as each git worktree of a repo, gets i
 - Shift+1 fits everything. Shift+2 zooms to the selection.
 - Cmd/Ctrl+Z undoes the agent's last change. Shift+Cmd/Ctrl+Z redoes it.
 - "Follow agent" jumps to the page the agent is editing.
+- Play (P) makes the design interactive: a click runs the node's triggers instead of selecting it. R replays. Esc, or Play again, puts everything back.
+
+## Motion
+
+Animations live in the screens they belong to, and they are plain CSS, so what you review is what ships.
+
+- A node has a `state`, such as `closed`. CSS styles each state (`data-[state=open]:opacity-100`), and a `transition` animates the change.
+- A node has triggers, such as `on: {click: {target: "Dialog", state: "open"}}`. They run in Play mode and never change the design files.
+- Keyframes for loops and entrances are project-wide, like variables. Durations and easings are variables too, and `Spring()` gives a spring as a CSS `linear()` easing.
+- An agent cannot watch an animation, so `Filmstrip` shows it one: the browser pauses every animation and moves each to an exact moment, then returns the frames side by side with the computed values. The same design always gives the same frames.
 
 ## Agent API
 
@@ -55,6 +66,7 @@ See [skill/SKILL.md](skill/SKILL.md), an [Agent Skill](https://agentskills.io). 
 - `execute` snippets run against a copy of the document. A failed call changes nothing and can be fixed with small find/replace edits instead of resending it.
 - Calls run one at a time, and a call copies only the pages it changes, so its cost follows the size of the edit, not of the project.
 - A file that is not a valid design, such as one with git conflict markers, is never overwritten or deleted. The viewer and every `execute` result say what is wrong with it until it is fixed.
+- Filmstrips draw the screen once per frame, then pause and seek each copy's animations through the Web Animations API. Hover, press and focus are forced through the DevTools protocol.
 - Screenshots and layout checks use a headless Chrome (via `playwright-core`) that runs the same renderer as the viewer.
 - The viewer moves the whole canvas with one CSS transform, skips off-screen screens with `content-visibility`, and only re-renders screens whose JSON changed.
 

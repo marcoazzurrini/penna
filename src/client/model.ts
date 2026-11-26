@@ -86,7 +86,7 @@ export class DocModel {
       }
     }
 
-    this.doc = { version: 2, variables: msg.variables, themes: msg.themes, pages: [...pages.values()] };
+    this.doc = { version: 2, variables: msg.variables, themes: msg.themes, keyframes: msg.keyframes, pages: [...pages.values()] };
     this.themesKey = JSON.stringify(msg.themes ?? null);
     return changed;
   }

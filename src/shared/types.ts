@@ -11,6 +11,24 @@ export interface TextSpan {
   class?: string;
 }
 
+/** What a trigger does: set or toggle the `state` of a node. */
+export interface Action {
+  /** Id or name of the node to change. Omit to change the node that has the trigger. */
+  target?: string;
+  /** Set the target's state to this. An empty string clears it. */
+  state?: string;
+  /** Switch the target between this state and the state stored in the design. */
+  toggle?: string;
+}
+
+export type TriggerEvent = "click" | "enter" | "leave";
+
+/** Actions to run in the viewer's play mode, by event. */
+export type Triggers = Partial<Record<TriggerEvent, Action[]>>;
+
+/** `@keyframes` rules by name. Each maps a stop ("from", "to", "50%") to CSS, camelCase keys. */
+export type Keyframes = Record<string, Record<string, Style>>;
+
 export interface PennaNode {
   id: string;
   type: NodeType;
@@ -41,6 +59,10 @@ export interface PennaNode {
   /** Applies a named theme's variables to this subtree. */
   theme?: string;
   hidden?: boolean;
+  /** A named state, rendered as `data-state`, for CSS to style: `data-[state=open]:opacity-100`. */
+  state?: string;
+  /** Triggers that change states in the viewer's play mode. */
+  on?: Triggers;
   children?: PennaNode[];
 }
 
@@ -63,6 +85,8 @@ export interface PennaDoc {
   variables?: Record<string, string>;
   /** Named variable sets that override `variables` inside nodes with a matching `theme`. */
   themes?: Record<string, Record<string, string>>;
+  /** Project-wide `@keyframes`, used by name in `animation`. */
+  keyframes?: Keyframes;
   pages: PennaPage[];
 }
 
@@ -73,6 +97,7 @@ export interface ProjectFile {
   pages: string[];
   variables?: Record<string, string>;
   themes?: Record<string, Record<string, string>>;
+  keyframes?: Keyframes;
 }
 
 /** `.penna/pages/<id>.json`: one page. The file name is the page id. */

@@ -1,5 +1,8 @@
+import { MAX_FRAMES, PSEUDO, springEasing, type FilmRequest } from "../shared/motion.ts";
+import { KEYFRAME_STOP, KEYFRAMES_NAME, styleValueProblem } from "../shared/schema.ts";
+import { camel } from "../shared/style.ts";
 import { applyPatch, expandRef, findDescendant, walk } from "../shared/tree.ts";
-import type { NodePatch, PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
+import type { NodePatch, PennaDoc, PennaNode, PennaPage, Style } from "../shared/types.ts";
 import type { LayoutReport, Renderer } from "./headless.ts";
 import type { Icons } from "./icons.ts";
 import { Normalizer, truncate } from "./normalize.ts";
@@ -13,12 +16,25 @@ export interface ShotJob {
   scale?: number;
 }
 
+export interface FilmJob {
+  req: FilmRequest;
+  /** Whether to return the frames as an image, or only the report. */
+  image: boolean;
+  /** What started the motion, for the report. */
+  cause: string;
+}
+
+const FILM_OPTIONS = ["state", "from", "hover", "active", "focus", "frames", "times", "duration", "scale"];
+/** Keyframes that Tailwind's own animate-* classes define. */
+const TAILWIND_KEYFRAMES = new Set(["spin", "ping", "pulse", "bounce"]);
+
 /** One snippet run: a working copy of the document, the API the snippet sees, and its output. */
 export class Session {
   readonly work: WorkDoc;
   outputLines: string[] = [];
   shotJobs: ShotJob[] = [];
   checkJobs: string[] = [];
+  filmJobs: FilmJob[] = [];
   private closed = false;
   private warnings: string[] = [];
   private created: string[] = [];
@@ -67,6 +83,91 @@ export class Session {
     if (t?.kind === "node") return t.loc.node.name ?? id;
     if (t?.kind === "page") return t.page.name;
     return id;
+  }
+
+  /** Warn about triggers on the changed pages whose target is not a node. */
+  checkTriggers() {
+    for (const page of this.work.doc.pages) {
+      if (!this.work.touched.has(page.id)) continue;
+      walk(page.children, (n) => {
+        if (!n.on) return;
+        for (const event in n.on) {
+          for (const a of n.on[event as keyof typeof n.on] ?? []) {
+            if (a.target === undefined) continue;
+            const t = this.work.tryResolve(a.target);
+            const hit = t?.kind === "node" && (t.loc.node.id === a.target || t.loc.node.name === a.target);
+            if (!hit) this.warn(`on.${event} of "${n.name ?? n.id}" targets "${a.target}", which is not the id or name of a node.`);
+          }
+        }
+      });
+    }
+  }
+
+  /** The DOM id of the node a path names, and the top-level node that holds it. */
+  private domNode(path: unknown, op: string): { id: string; top: string } {
+    const work = this.work;
+    const t = work.resolve(path);
+    if (t.kind === "page") throw new Error(`${op}: "${path}" is a page. Pass a node.`);
+    if (t.kind === "node") return { id: t.loc.node.id, top: t.loc.top.id };
+    const expanded = expandRef(t.inst, work);
+    const hit = expanded && (findDescendant(expanded, t.inst.id + "/" + t.key) ?? findDescendant(expanded, t.key));
+    if (!hit) throw new Error(`${op}: no "${t.key}" inside instance "${t.inst.name ?? t.inst.id}".`);
+    return { id: hit.id, top: work.get(t.inst.id)!.top.id };
+  }
+
+  /** Turn `Filmstrip` or `Motion` arguments into a job. */
+  private film(op: string, path: unknown, opts: unknown, image: boolean): FilmJob {
+    if (opts !== undefined && (!opts || typeof opts !== "object" || Array.isArray(opts))) throw new Error(`${op}(path, options?) takes an options object, got ${JSON.stringify(opts)}.`);
+    const o = (opts ?? {}) as Record<string, unknown>;
+    for (const k in o) if (!FILM_OPTIONS.includes(k)) throw new Error(`${op}: unknown option "${k}". Options: ${FILM_OPTIONS.join(", ")}.`);
+    const target = this.domNode(path, op);
+    const inScreen = (p: unknown) => {
+      const n = this.domNode(p, op);
+      if (n.top !== target.top) throw new Error(`${op}: "${p}" is on another screen than "${path}".`);
+      return n.id;
+    };
+    const states = (v: unknown, name: string): Record<string, string | null> => {
+      if (v === undefined) return {};
+      if (v === null || typeof v === "string") return { [target.id]: v || null };
+      if (typeof v !== "object" || Array.isArray(v)) throw new Error(`${op}: ${name} must be a state name, or {path: state}.`);
+      const out: Record<string, string | null> = {};
+      for (const k in v) {
+        const s = (v as Record<string, unknown>)[k];
+        if (s !== null && typeof s !== "string") throw new Error(`${op}: ${name}["${k}"] must be a state name or null.`);
+        out[inScreen(k)] = s || null;
+      }
+      return out;
+    };
+    const req: FilmRequest = { top: target.top, target: target.id, frames: 5, from: states(o.from, "from"), to: states(o.state, "state"), pseudo: {} };
+    const cause: string[] = [];
+    const label = (id: string) => (id === target.id ? "" : ` on ${this.nameOf(id)}`);
+    for (const id in req.to) cause.push(`state ${req.from[id] ?? this.work.get(id)?.node.state ?? "none"} → ${req.to[id] ?? "none"}${label(id)}`);
+    for (const name in PSEUDO) {
+      const v = o[name];
+      if (v === undefined || v === false) continue;
+      if (v !== true && typeof v !== "string") throw new Error(`${op}: ${name} must be true or a path.`);
+      const id = v === true ? target.id : inScreen(v);
+      req.pseudo[id] = [...new Set([...(req.pseudo[id] ?? []), ...PSEUDO[name]])];
+      cause.push(name + label(id));
+    }
+    const ms = (v: unknown, name: string) => {
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`${op}: ${name} must be a time in ms, got ${JSON.stringify(v)}.`);
+      return v;
+    };
+    if (o.times !== undefined) {
+      if (!Array.isArray(o.times) || !o.times.length || o.times.length > MAX_FRAMES) throw new Error(`${op}: times must be a list of 1 to ${MAX_FRAMES} times in ms.`);
+      req.times = [...o.times].map((t) => ms(t, "each time")).sort((a, b) => a - b);
+    }
+    if (o.frames !== undefined) {
+      if (!Number.isInteger(o.frames) || (o.frames as number) < 2 || (o.frames as number) > MAX_FRAMES) throw new Error(`${op}: frames must be a whole number from 2 to ${MAX_FRAMES}.`);
+      req.frames = o.frames as number;
+    }
+    if (o.duration !== undefined) req.duration = ms(o.duration, "duration");
+    if (o.scale !== undefined) {
+      if (typeof o.scale !== "number" || !(o.scale > 0) || o.scale > 4) throw new Error(`${op}: scale must be a number up to 4.`);
+      req.scale = o.scale;
+    }
+    return { req, image, cause: cause.join(", ") || "on load" };
   }
 
   summary(url: string): string {
@@ -244,6 +345,8 @@ export class Session {
           const w = n.style?.width, h = n.style?.height;
           if (w !== undefined || h !== undefined) s += ` ${w ?? "auto"}×${h ?? "auto"}`;
           if (n.hidden) s += " hidden";
+          if (n.state) s += ` state=${n.state}`;
+          if (n.on) s += ` on:${Object.keys(n.on).join(",")}`;
           lines.push(s);
           if (n.children) {
             if (d + 1 > depth) lines.push("  ".repeat(d + 1) + `… ${n.children.length} children`);
@@ -266,6 +369,7 @@ export class Session {
           selection: self.store.selection?.ids ?? [],
           variables: Object.keys(work.doc.variables ?? {}).length,
           themes: Object.keys(work.doc.themes ?? {}),
+          keyframes: Object.keys(work.doc.keyframes ?? {}),
         };
       },
 
@@ -296,6 +400,53 @@ export class Session {
           else target[key] = String(vars[k]);
         }
         work.changed = true;
+      },
+
+      SetKeyframes(rules: Record<string, Record<string, Record<string, unknown>> | null>) {
+        if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("SetKeyframes({name: {from: {...}, to: {...}}}) needs an object.");
+        const target = work.keyframes();
+        for (const name in rules) {
+          const stops = rules[name];
+          if (stops === null) {
+            delete target[name];
+            continue;
+          }
+          if (!KEYFRAMES_NAME.test(name)) throw new Error(`Keyframes name "${name}" must be letters, digits, - and _, starting with a letter.`);
+          if (!stops || typeof stops !== "object" || Array.isArray(stops)) throw new Error(`Keyframes "${name}" must be an object of stops, like {from: {...}, to: {...}}.`);
+          if (TAILWIND_KEYFRAMES.has(name)) self.warn(`Keyframes "${name}" replace the ones behind Tailwind's animate-${name}.`);
+          const rule: Record<string, Style> = {};
+          for (const key in stops) {
+            // A bare number is a percentage: {0: ..., 50: ..., 100: ...}.
+            const stop = /^\d+(\.\d+)?$/.test(key) ? key + "%" : key.trim();
+            if (!KEYFRAME_STOP.test(stop)) throw new Error(`Keyframes "${name}" has a bad stop "${key}". Use from, to, or a percentage.`);
+            const css = stops[key];
+            if (!css || typeof css !== "object" || Array.isArray(css)) throw new Error(`Keyframes "${name}" stop "${key}" must be an object of CSS properties.`);
+            const style: Style = {};
+            for (const k in css) {
+              const problem = styleValueProblem(css[k]);
+              if (problem) throw new Error(`Keyframes "${name}" stop "${key}": ${k} ${problem}.`);
+              style[camel(k)] = css[k] as string | number;
+            }
+            rule[stop] = style;
+          }
+          if (!Object.keys(rule).length) throw new Error(`Keyframes "${name}" has no stops.`);
+          target[name] = rule;
+        }
+        work.changed = true;
+      },
+
+      GetKeyframes() {
+        return structuredClone(work.doc.keyframes ?? {});
+      },
+
+      Spring: (bounce?: number) => springEasing(bounce),
+
+      Filmstrip(path: string, opts?: unknown) {
+        self.filmJobs.push(self.film("Filmstrip", path, opts, true));
+      },
+
+      Motion(path: string, opts?: unknown) {
+        self.filmJobs.push(self.film("Motion", path, opts, false));
       },
 
       Components(): { id: string; name: string; page: string }[] {
