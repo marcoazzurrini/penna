@@ -1,4 +1,4 @@
-import type { PennaNode } from "./types.ts";
+import type { Keyframes, PennaNode } from "./types.ts";
 
 // Messages from the server to the viewer.
 
@@ -20,6 +20,7 @@ export interface DocMessage {
   focus?: string;
   variables: Record<string, string>;
   themes?: Record<string, Record<string, string>>;
+  keyframes?: Keyframes;
   /** Files in `.penna/` that could not be used, each with what is wrong. */
   problems?: string[];
   pages: { id: string; name: string; nodes: string[] }[];

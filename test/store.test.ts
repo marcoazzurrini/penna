@@ -152,8 +152,12 @@ test("the watcher syncs outside edits on its own", async () => {
   store.watch();
   try {
     const changed = new Promise((resolve) => store.once("change", resolve));
-    write("pages/a.json", { version: 2, name: "A", children: [frame("watched")] });
-    await changed;
+    // The operating system may start reporting changes a moment after watch() returns,
+    // so a write made at once can go unseen. Write again until the store notices.
+    const edit = () => write("pages/a.json", { version: 2, name: "A", children: [frame("watched")] });
+    edit();
+    const again = setInterval(edit, 100);
+    await changed.finally(() => clearInterval(again));
     assert.equal(store.get().pages[0].children[0].id, "watched");
   } finally {
     store.unwatch();

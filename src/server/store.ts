@@ -86,7 +86,7 @@ function check(rel: string, text: string): { data: unknown } | { problem: string
 }
 
 /**
- * Owns the project's design in `.penna/`: `project.json` holds variables, themes, and
+ * Owns the project's design in `.penna/`: `project.json` holds variables, themes, keyframes, and
  * page order; each page lives in `pages/<id>.json`. Agents and the viewer see one
  * document. Writes touch only the files that changed.
  *
@@ -279,6 +279,7 @@ export class Store extends EventEmitter {
     const project: ProjectFile = { version: 2, pages: doc.pages.map((p) => p.id) };
     if (doc.variables && Object.keys(doc.variables).length) project.variables = doc.variables;
     if (doc.themes && Object.keys(doc.themes).length) project.themes = doc.themes;
+    if (doc.keyframes && Object.keys(doc.keyframes).length) project.keyframes = doc.keyframes;
     out.set(PROJECT, toText(project));
     for (const p of doc.pages) {
       if (!validId(p.id)) throw new Error(`Invalid page id "${p.id}".`);
@@ -300,7 +301,7 @@ export class Store extends EventEmitter {
     const rest = ids.filter((id) => !ordered.has(id)).sort();
     const pages = [...new Set(order), ...rest].map((id) => this.page(id));
     const base = pages.length ? { version: 2 as const, pages } : emptyDoc();
-    return deepFreeze({ ...base, variables: project?.variables ?? {}, themes: project?.themes });
+    return deepFreeze({ ...base, variables: project?.variables ?? {}, themes: project?.themes, keyframes: project?.keyframes });
   }
 
   private page(id: string): PennaPage {

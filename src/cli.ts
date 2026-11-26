@@ -115,7 +115,7 @@ async function main() {
         const dir = path.join(root, ".penna", ".shots");
         fs.mkdirSync(dir, { recursive: true });
         for (const s of r.shots) {
-          const out = path.join(dir, `${s.id}-${Date.now()}.png`);
+          const out = path.join(dir, `${s.id.replace(/[^\w.-]/g, "_")}-${Date.now()}.png`);
           fs.writeFileSync(out, Buffer.from(s.png, "base64"));
           console.log(`Screenshot ${s.name}: ${out}`);
         }

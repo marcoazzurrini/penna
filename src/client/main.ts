@@ -4,7 +4,8 @@ import type { DocMessage } from "../shared/wire.ts";
 import { createCamera, type Rect } from "./camera.ts";
 import { startHeadless } from "./headless.ts";
 import { DocModel } from "./model.ts";
-import { fontFamilies, loadFonts, renderNode, setTailwindCss } from "./render.ts";
+import { createPlay } from "./play.ts";
+import { fontFamilies, loadFonts, renderNode, setKeyframes, setTailwindCss } from "./render.ts";
 import { createSidebar } from "./sidebar.ts";
 
 // The viewer: draws the open page, keeps the overlay in place, and wires the modules together.
@@ -47,6 +48,8 @@ function startViewer() {
   const empty = $<HTMLElement>("empty");
   const problemsEl = $<HTMLElement>("problems");
   const follow = $<HTMLInputElement>("follow");
+  const playBtn = $<HTMLButtonElement>("play");
+  const play = createPlay(world);
 
   let ws: WebSocket | null = null;
   // localStorage is shared by every project served on this port, so keys include the project.
@@ -90,8 +93,10 @@ function startViewer() {
     zoomLabel: zoomBtn,
     onMove: updateOverlay,
     onRest: saveCamera,
-    onClick: (x, y) => select(hitTest(x, y), false),
-    onHover: queueHover,
+    onClick: (x, y) => (play.on ? play.click(x, y) : select(hitTest(x, y), false)),
+    onHover: (x, y) => {
+      if (!play.on) queueHover(x, y);
+    },
     onHoverEnd: () => setHover(null),
   });
 
@@ -146,6 +151,7 @@ function startViewer() {
     const changedPages = model.apply(msg);
     const doc = model.doc!;
     if (msg.css !== undefined) setTailwindCss(msg.css);
+    setKeyframes(doc.keyframes);
     if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
     if (!doc.pages.some((p) => p.id === pageId)) pageId = storage.get(key("page")) ?? "";
     if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
@@ -440,13 +446,34 @@ function startViewer() {
     code.onclick = () => navigator.clipboard?.writeText(selected!);
   }
 
+  // ---------- Play mode ----------
+
+  /** In play mode a click runs the node's triggers instead of selecting it. */
+  function setPlay(value: boolean) {
+    play.set(value);
+    if (value) {
+      play.replay();
+      setHover(null);
+    }
+    viewport.classList.toggle("playing", value);
+    playBtn.setAttribute("aria-pressed", String(value));
+    playBtn.lastElementChild!.textContent = value ? "Stop" : "Play";
+    (playBtn.firstElementChild as HTMLElement).style.setProperty("--i", `url(/icon/${value ? "square" : "play"}.svg)`);
+    updateOverlay();
+  }
+  playBtn.onclick = () => setPlay(!play.on);
+  setPlay(false);
+
   // ---------- Keyboard ----------
 
   window.addEventListener("keydown", (e) => {
     // Typing in a field must not trigger shortcuts. A checkbox takes no typing.
     if ((e.target instanceof HTMLInputElement && e.target.type !== "checkbox") || e.target instanceof HTMLSelectElement) return;
     const mod = e.metaKey || e.ctrlKey;
-    if (e.shiftKey && e.code === "Digit1") fitAll();
+    if (!mod && !e.altKey && e.key.toLowerCase() === "p") setPlay(!play.on);
+    else if (!mod && !e.altKey && e.key.toLowerCase() === "r" && play.on) play.replay();
+    else if (e.key === "Escape" && play.on) setPlay(false);
+    else if (e.shiftKey && e.code === "Digit1") fitAll();
     else if (e.shiftKey && e.code === "Digit2" && selected) zoomTo(selected);
     else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();

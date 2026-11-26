@@ -1,4 +1,5 @@
-import type { Browser, Page } from "playwright-core";
+import type { Browser, CDPSession, Page } from "playwright-core";
+import type { FilmPseudo, FilmReport, FilmRequest } from "../shared/motion.ts";
 import { renderSubset, type NodeLookup } from "../shared/tree.ts";
 import type { PennaDoc } from "../shared/types.ts";
 
@@ -15,6 +16,8 @@ export interface Renderer {
   /** `id` is a page id or a node id. `index` finds the nodes of `doc`. */
   screenshot(doc: PennaDoc, index: NodeLookup, id: string, scale?: number): Promise<Buffer>;
   layout(doc: PennaDoc, index: NodeLookup, id: string): Promise<LayoutReport>;
+  /** Sample motion at several moments. With `image`, the frames come back as one picture. */
+  film(doc: PennaDoc, index: NodeLookup, req: FilmRequest, image: boolean): Promise<{ report: FilmReport; png?: Buffer }>;
 }
 
 interface PennaWindow {
@@ -22,6 +25,9 @@ interface PennaWindow {
     /** `css` is null when the stylesheet sent last time still applies. */
     render(doc: PennaDoc, css: string | null, id: string, scale?: number): Promise<{ width: number; height: number }>;
     layout(doc: PennaDoc, css: string | null, id: string): Promise<LayoutReport>;
+    filmStart(doc: PennaDoc, css: string | null, req: FilmRequest): Promise<FilmPseudo[]>;
+    filmSample(): FilmReport;
+    filmEnd(): void;
   };
 }
 
@@ -32,6 +38,8 @@ const JOB_TIMEOUT = 30_000;
 export class Headless implements Renderer {
   private browser: Browser | null = null;
   private page: Promise<Page> | null = null;
+  /** DevTools session of the page, opened the first time a film forces a pseudo-class. */
+  private cdp: Promise<CDPSession> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   /** The stylesheet the page has now. */
   private sentCss: string | null = null;
@@ -81,6 +89,7 @@ export class Headless implements Renderer {
     this.generation++;
     this.browser = null;
     this.page = null;
+    this.cdp = null;
     this.sentCss = null;
   }
 
@@ -142,6 +151,45 @@ export class Headless implements Renderer {
       this.sentCss = sent;
       return report;
     });
+  }
+
+  /**
+   * Render the screen once per frame, start the motion, pause every animation, and move
+   * each copy to its own moment. Nothing depends on the clock, so the same design always
+   * gives the same frames.
+   */
+  film(doc: PennaDoc, index: NodeLookup, req: FilmRequest, image: boolean): Promise<{ report: FilmReport; png?: Buffer }> {
+    return this.serial(async () => {
+      const page = await this.ready();
+      const { subset, css, sent } = this.payload(doc, index, req.top);
+      const pseudo = await page.evaluate(([d, c, r]) => (window as unknown as PennaWindow).__penna.filmStart(d, c, r), [subset, css, req] as const);
+      this.sentCss = sent;
+      try {
+        if (pseudo.length) await this.force(page, pseudo);
+        const report = await page.evaluate(() => (window as unknown as PennaWindow).__penna.filmSample());
+        // The animations are paused where the film put them, so they must not be reset.
+        const png = image ? await page.locator("#stage").screenshot({ type: "png", animations: "allow" }) : undefined;
+        return { report, png };
+      } finally {
+        await page.evaluate(() => (window as unknown as PennaWindow).__penna.filmEnd()).catch(() => {});
+      }
+    });
+  }
+
+  /** Make elements match :hover, :active or :focus, which only the DevTools protocol can do for several at once. */
+  private async force(page: Page, pseudo: FilmPseudo[]) {
+    this.cdp ??= (async () => {
+      const session = await page.context().newCDPSession(page);
+      await session.send("DOM.enable");
+      await session.send("CSS.enable");
+      return session;
+    })();
+    const cdp = await this.cdp;
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    for (const p of pseudo) {
+      const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: p.selector });
+      for (const nodeId of nodeIds) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: p.classes });
+    }
   }
 
   private closed = false;

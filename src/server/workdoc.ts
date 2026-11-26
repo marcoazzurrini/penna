@@ -1,5 +1,5 @@
 import { applyPatch, findDescendant, type Located, type NodeLookup } from "../shared/tree.ts";
-import type { NodePatch, PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
+import type { Keyframes, NodePatch, PennaDoc, PennaNode, PennaPage } from "../shared/types.ts";
 import { pageSlug } from "./store.ts";
 
 /** What a path names: a page, a node, or a part of a component instance. */
@@ -66,11 +66,12 @@ export class WorkDoc implements NodeLookup {
   private owned = new Map<PennaPage, PageIndex>();
   private ownVariables = false;
   private ownThemes = false;
+  private ownKeyframes = false;
   private reserved: string[];
 
   /** `reserved` lists page ids that new pages must not take. */
   constructor(base: PennaDoc, viewing: string | null, reserved: string[] = []) {
-    this.doc = { version: 2, variables: base.variables, themes: base.themes, pages: [...base.pages] };
+    this.doc = { version: 2, variables: base.variables, themes: base.themes, keyframes: base.keyframes, pages: [...base.pages] };
     this.reserved = reserved;
     this.pageId = this.doc.pages.find((p) => p.id === viewing)?.id ?? this.doc.pages[0]?.id ?? this.addPage("Page 1").id;
   }
@@ -215,6 +216,14 @@ export class WorkDoc implements NodeLookup {
       this.ownThemes = true;
     }
     return (this.doc.themes![name] ??= {});
+  }
+
+  keyframes(): Keyframes {
+    if (!this.ownKeyframes) {
+      this.doc.keyframes = { ...(this.doc.keyframes ?? {}) };
+      this.ownKeyframes = true;
+    }
+    return this.doc.keyframes!;
   }
 
   // ---------- Changes. Nodes and pages passed in must be owned. ----------

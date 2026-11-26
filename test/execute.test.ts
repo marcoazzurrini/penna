@@ -20,6 +20,7 @@ function fakeRenderer(delay = 0) {
   const report: LayoutReport = { width: 1, height: 1, nodes: [], problems: [] };
   const renderer: Renderer = {
     screenshot: async () => Buffer.alloc(0),
+    film: async () => ({ report: { times: [], duration: 0, tracks: [], hidden: 0, outside: 0, problems: [], width: 0, height: 0 } }),
     layout: async (doc) => {
       seen.push(structuredClone(doc));
       await new Promise((r) => setTimeout(r, delay));

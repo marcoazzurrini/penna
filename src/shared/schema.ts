@@ -7,10 +7,18 @@ export const NODE_TYPES: ReadonlySet<string> = new Set<NodeType>(["frame", "text
 
 export const NODE_KEYS: ReadonlySet<string> = new Set([
   "type", "name", "x", "y", "class", "style", "text", "spans", "src", "icon", "svg", "ref",
-  "overrides", "component", "theme", "hidden", "children",
+  "overrides", "component", "theme", "hidden", "state", "on", "children",
 ]);
 
-const STRINGS = new Set(["name", "class", "text", "src", "icon", "svg", "ref", "theme"]);
+export const TRIGGER_EVENTS: ReadonlySet<string> = new Set(["click", "enter", "leave"]);
+const ACTION_KEYS = new Set(["target", "state", "toggle"]);
+
+/** A keyframes name must be safe to write into a stylesheet as it is. */
+export const KEYFRAMES_NAME = /^[A-Za-z_][\w-]*$/;
+const STOP = "(?:from|to|\\d+(?:\\.\\d+)?%)";
+export const KEYFRAME_STOP = new RegExp(`^${STOP}(?:\\s*,\\s*${STOP})*$`);
+
+const STRINGS = new Set(["name", "class", "text", "src", "icon", "svg", "ref", "theme", "state"]);
 const NUMBERS = new Set(["x", "y"]);
 const BOOLEANS = new Set(["component", "hidden"]);
 
@@ -69,6 +77,7 @@ export function propProblem(key: string, v: unknown, patch = false): string | nu
     }
     return null;
   }
+  if (key === "on") return triggersProblem(v);
   if (key === "overrides") {
     if (!isObject(v)) return `overrides must be an object of patches, got ${show(v)}`;
     for (const name in v) {
@@ -80,6 +89,48 @@ export function propProblem(key: string, v: unknown, patch = false): string | nu
       }
     }
     return null;
+  }
+  return null;
+}
+
+/** What is wrong with one action of a trigger, or null. */
+export function actionProblem(a: unknown): string | null {
+  if (!isObject(a)) return `an action must be an object like {target, state}, got ${show(a)}`;
+  for (const k in a) {
+    if (!ACTION_KEYS.has(k)) return `unknown action property "${k}"; use target, state, or toggle`;
+    if (typeof a[k] !== "string") return `an action's ${k} must be a string, got ${show(a[k])}`;
+  }
+  if ((a.state === undefined) === (a.toggle === undefined)) return `an action needs either state or toggle, got ${show(a)}`;
+  if (a.toggle === "") return "an action's toggle must name a state";
+  return null;
+}
+
+function triggersProblem(v: unknown): string | null {
+  if (!isObject(v)) return `on must be an object like {click: {target, state}}, got ${show(v)}`;
+  for (const event in v) {
+    if (!TRIGGER_EVENTS.has(event)) return `unknown trigger "${event}"; use click, enter, or leave`;
+    const actions = v[event];
+    if (!Array.isArray(actions)) return `on.${event} must be an array of actions, got ${show(actions)}`;
+    for (const a of actions) {
+      const p = actionProblem(a);
+      if (p) return `on.${event}: ${p}`;
+    }
+  }
+  return null;
+}
+
+/** The first problem in a set of keyframes rules, or null. */
+export function keyframesProblem(v: unknown): string | null {
+  if (!isObject(v)) return `keyframes must be an object, got ${show(v)}`;
+  for (const name in v) {
+    if (!KEYFRAMES_NAME.test(name)) return `keyframes name ${show(name)} must be letters, digits, - and _, starting with a letter`;
+    const stops = v[name];
+    if (!isObject(stops)) return `keyframes.${name} must be an object of stops, got ${show(stops)}`;
+    for (const stop in stops) {
+      if (!KEYFRAME_STOP.test(stop)) return `keyframes.${name} has a bad stop ${show(stop)}; use from, to, or a percentage`;
+      const p = styleProblem(stops[stop], false);
+      if (p) return `keyframes.${name}["${stop}"]: ${p}`;
+    }
   }
   return null;
 }
@@ -139,6 +190,10 @@ export function projectFileProblem(v: unknown): string | null {
   }
   if (v.variables !== undefined) {
     const p = variablesProblem(v.variables, "variables");
+    if (p) return p;
+  }
+  if (v.keyframes !== undefined) {
+    const p = keyframesProblem(v.keyframes);
     if (p) return p;
   }
   if (v.themes !== undefined) {
