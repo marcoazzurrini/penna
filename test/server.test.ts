@@ -9,6 +9,7 @@ import net from "node:net";
 import { ExecClient } from "../src/server/client.ts";
 import { Headless } from "../src/server/headless.ts";
 import { indexDoc } from "../src/shared/tree.ts";
+import { pkgPath } from "../src/server/paths.ts";
 import { AlreadyRunning, lockFile, startServer, type PennaServer } from "../src/server/http.ts";
 
 let server: PennaServer;
@@ -123,6 +124,11 @@ test("an incomplete fonts answer is not cached by the browser", async () => {
 // The tests below need Chrome. They are skipped where there is none.
 let chrome: Browser | null = null;
 before(async () => {
+  // Chrome loads the built viewer. Build it when the tests run before `npm run build`.
+  if (!fs.existsSync(pkgPath("dist", "client", "index.html"))) {
+    const { build } = await import("vite");
+    await build({ configFile: pkgPath("vite.config.ts"), logLevel: "silent" });
+  }
   try {
     const { chromium } = await import("playwright-core");
     chrome = await chromium.launch({ channel: "chrome", headless: true }).catch(() => chromium.launch({ headless: true }));
