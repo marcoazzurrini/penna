@@ -23,6 +23,7 @@ export class Wire {
   private branch: () => string | null;
   /** The stylesheet for the current document. */
   css = "";
+  private problems: string[] = [];
 
   /** `branch` returns the checked-out git branch, read each time a message is built. */
   constructor(project: string, tailwind: Tailwind, branch: () => string | null = () => null) {
@@ -35,7 +36,7 @@ export class Wire {
    * Record a new version of the document and return the diff from the previous one.
    * `files` lists the changed paths in `.penna/`; omit it to compare every page.
    */
-  update(doc: PennaDoc, rev: number, files?: Set<string>): DocMessage {
+  update(doc: PennaDoc, rev: number, files?: Set<string>, problems: string[] = []): DocMessage {
     const nodes: DocMessage["nodes"] = [];
     const next = new Map<string, PageState>();
     for (const p of doc.pages) {
@@ -53,10 +54,21 @@ export class Wire {
       next.set(p.id, state);
     }
     this.pages = next;
+    this.problems = problems;
     const msg = this.message(doc, rev, false, nodes);
     const css = this.build();
     if (css !== this.css) msg.css = this.css = css;
     return msg;
+  }
+
+  /**
+   * The stylesheet for rendering `doc`, which may hold classes that no saved document
+   * has yet: a snippet measures its work before it is committed.
+   */
+  cssFor(doc: PennaDoc): string {
+    const classes = new Set<string>();
+    for (const p of doc.pages) classesIn(p.children, classes);
+    return this.tailwind.build(classes);
   }
 
   /** The whole document, for a viewer that just connected. */
@@ -80,6 +92,7 @@ export class Wire {
       full,
       variables: doc.variables ?? {},
       themes: doc.themes,
+      problems: this.problems.length ? this.problems : undefined,
       pages: doc.pages.map((p) => ({ id: p.id, name: p.name, nodes: p.children.map((n) => n.id) })),
       nodes,
     };

@@ -37,6 +37,7 @@ API (globals)
 
 RULES
 - Each call is atomic: on error nothing changes. Fix a failed call with `editId` and `edits` (find/replace on the failed snippet) instead of resending it.
+- Calls run one at a time, and each must finish within 60 s. Values of the wrong kind (e.g. `class` as an array) fail the call.
 - Name nodes you will reference later. The result lists `name=id` for every named node you created.
 - Globals assigned without let/const persist between calls, e.g. `home = Insert(...)`.
 - Read before editing an existing design: `Print(Tree())`.

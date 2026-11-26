@@ -1,15 +1,13 @@
-import { variablesToCss } from "../shared/style.ts";
-import { indexDoc, walk, type Located } from "../shared/tree.ts";
-import type { PennaNode, PennaPage, PennaDoc } from "../shared/types.ts";
-import { frameKey, type DocMessage } from "../shared/wire.ts";
+import { refsIn } from "../shared/tree.ts";
+import type { PennaNode, PennaPage } from "../shared/types.ts";
+import type { DocMessage } from "../shared/wire.ts";
+import { createCamera, type Rect } from "./camera.ts";
 import { startHeadless } from "./headless.ts";
+import { DocModel } from "./model.ts";
 import { fontFamilies, loadFonts, renderNode, setTailwindCss } from "./render.ts";
+import { createSidebar } from "./sidebar.ts";
 
-interface Camera {
-  x: number;
-  y: number;
-  z: number;
-}
+// The viewer: draws the open page, keeps the overlay in place, and wires the modules together.
 
 interface Rendered {
   el: HTMLElement;
@@ -18,9 +16,23 @@ interface Rendered {
   node: PennaNode;
 }
 
-type ServerMsg = DocMessage;
-
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** localStorage can throw (private windows, blocked site data) and is only a convenience here. */
+const storage = {
+  get(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {}
+  },
+};
 
 function startViewer() {
   const viewport = $<HTMLElement>("viewport");
@@ -29,33 +41,26 @@ function startViewer() {
   const hoverBox = $<HTMLElement>("hover-box");
   const selectBox = $<HTMLElement>("select-box");
   const projectEl = $<HTMLElement>("project");
-  const pagesEl = $<HTMLUListElement>("pages");
-  const layersEl = $<HTMLElement>("layers");
   const info = $<HTMLElement>("info");
   const zoomBtn = $<HTMLButtonElement>("zoom");
   const statusEl = $<HTMLElement>("status");
   const empty = $<HTMLElement>("empty");
+  const problemsEl = $<HTMLElement>("problems");
   const follow = $<HTMLInputElement>("follow");
 
   let ws: WebSocket | null = null;
   // localStorage is shared by every project served on this port, so keys include the project.
   let project = "";
   const key = (k: string) => `penna:${project}:${k}`;
-  let doc: PennaDoc | null = null;
-  let index = new Map<string, Located>();
-  /** Top-level nodes received from the server, by frameKey, with their hashes. */
-  let frames = new Map<string, { node: PennaNode; hash: string }>();
-  let themesKey = "";
+  const model = new DocModel();
   let pageId = "";
   let selected: string | null = null;
   let hovered: string | null = null;
-  let cam: Camera = { x: 0, y: 0, z: 1 };
   const rendered = new Map<string, Rendered>();
-  const expanded = new Set<string>();
   const sizes = new Map<string, { w: number; h: number }>();
 
-  follow.checked = localStorage.getItem("penna:follow") !== "0";
-  follow.onchange = () => localStorage.setItem("penna:follow", follow.checked ? "1" : "0");
+  follow.checked = storage.get("penna:follow") !== "0";
+  follow.onchange = () => storage.set("penna:follow", follow.checked ? "1" : "0");
 
   // Theme: follow the system, or force light or dark. The choice applies to every project.
   const THEMES = ["system", "light", "dark"] as const;
@@ -72,10 +77,41 @@ function startViewer() {
     const cur = THEMES.indexOf((document.documentElement.dataset.theme ?? "system") as (typeof THEMES)[number]);
     const next = THEMES[(cur + 1) % THEMES.length];
     document.documentElement.dataset.theme = next;
-    localStorage.setItem("penna:theme", next);
+    storage.set("penna:theme", next);
     showTheme();
   };
   showTheme();
+
+  const page = (): PennaPage | undefined => model.doc?.pages.find((p) => p.id === pageId);
+
+  const camera = createCamera({
+    viewport,
+    world,
+    zoomLabel: zoomBtn,
+    onMove: updateOverlay,
+    onRest: saveCamera,
+    onClick: (x, y) => select(hitTest(x, y), false),
+    onHover: queueHover,
+    onHoverEnd: () => setHover(null),
+  });
+
+  const sidebar = createSidebar({
+    pagesEl: $<HTMLUListElement>("pages"),
+    layersEl: $<HTMLElement>("layers"),
+    doc: () => model.doc,
+    page,
+    index: () => model.index,
+    onOpenPage(id) {
+      if (id === pageId) return;
+      saveCamera();
+      pageId = id;
+      selected = null;
+      renderDoc(false, true);
+    },
+    onSelect: (id) => select(id, true),
+    onZoomTo: zoomTo,
+    onHover: setHover,
+  });
 
   // ---------- Connection ----------
 
@@ -90,55 +126,46 @@ function startViewer() {
       statusEl.title = "Disconnected. Retrying…";
       setTimeout(connect, 1000);
     };
-    ws.onmessage = (e) => onMessage(JSON.parse(e.data) as ServerMsg);
+    ws.onmessage = (e) => onMessage(JSON.parse(e.data) as DocMessage);
   }
 
   function send(msg: object) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
 
-  function onMessage(msg: ServerMsg) {
-    if (msg.t === "doc") {
-      const label = msg.branch ? `${msg.project} · ${msg.branch}` : msg.project;
-      if (msg.project !== project || projectEl.textContent !== label) {
-        project = msg.project;
-        projectEl.textContent = label;
-        projectEl.title = label;
-        document.title = `penna · ${label}`;
-      }
-      const first = !doc;
-      if (msg.full) frames.clear();
-      for (const f of msg.nodes) frames.set(frameKey(f.page, f.node.id), { node: f.node, hash: f.hash });
-      // Rebuild the document from the nodes we already have plus the ones that changed.
-      const live = new Map<string, { node: PennaNode; hash: string }>();
-      const pages = msg.pages.map((p) => ({
-        id: p.id,
-        name: p.name,
-        children: p.nodes.flatMap((id) => {
-          const key = frameKey(p.id, id);
-          const f = frames.get(key);
-          if (!f) return [];
-          live.set(key, f);
-          return [f.node];
-        }),
-      }));
-      frames = live;
-      doc = { version: 2, variables: msg.variables, themes: msg.themes, pages };
-      themesKey = JSON.stringify(doc.themes ?? null);
-      index = indexDoc(doc);
-      if (msg.css !== undefined) setTailwindCss(msg.css);
-      if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
-      if (!doc.pages.some((p) => p.id === pageId)) pageId = localStorage.getItem(key("page")) ?? "";
-      if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
-      renderDoc(first);
+  function onMessage(msg: DocMessage) {
+    if (msg.t !== "doc") return;
+    const label = msg.branch ? `${msg.project} · ${msg.branch}` : msg.project;
+    if (msg.project !== project || projectEl.textContent !== label) {
+      project = msg.project;
+      projectEl.textContent = label;
+      projectEl.title = label;
+      document.title = `penna · ${label}`;
+    }
+    const first = !model.doc;
+    const changedPages = model.apply(msg);
+    const doc = model.doc!;
+    if (msg.css !== undefined) setTailwindCss(msg.css);
+    if (msg.focus && follow.checked && doc.pages.some((p) => p.id === msg.focus)) pageId = msg.focus;
+    if (!doc.pages.some((p) => p.id === pageId)) pageId = storage.get(key("page")) ?? "";
+    if (!doc.pages.some((p) => p.id === pageId)) pageId = doc.pages[0]?.id ?? "";
+    showProblems(msg.problems ?? []);
+    // A full message means a new connection, perhaps to a restarted server that has no sizes yet.
+    if (msg.full) resendSizes = true;
+    renderDoc(first, changedPages.has(pageId));
+  }
+
+  function showProblems(problems: string[]) {
+    problemsEl.hidden = !problems.length;
+    problemsEl.textContent = "";
+    for (const p of problems) {
+      const line = document.createElement("p");
+      line.textContent = p;
+      problemsEl.appendChild(line);
     }
   }
 
   // ---------- Rendering ----------
-
-  function page(): PennaPage | undefined {
-    return doc?.pages.find((p) => p.id === pageId);
-  }
 
   function clearCanvas() {
     world.textContent = "";
@@ -147,21 +174,36 @@ function startViewer() {
     sizes.clear();
   }
 
+  /** The custom properties now set on the world, so the next update can remove the stale ones. */
+  let variableNames: string[] = [];
+  function applyVariables(vars: Record<string, string> | undefined) {
+    for (const name of variableNames) world.style.removeProperty(name);
+    variableNames = [];
+    for (const k in vars) {
+      const name = "--" + k.replace(/^--/, "");
+      world.style.setProperty(name, String(vars[k]));
+      variableNames.push(name);
+    }
+  }
+
   let lastPage = "";
-  function renderDoc(first: boolean) {
+  let resendSizes = false;
+  /** `layersChanged` says whether the open page's nodes, name, or order changed. */
+  function renderDoc(first: boolean, layersChanged: boolean) {
+    const doc = model.doc;
     if (!doc) return;
     const pg = page();
     const pageChanged = pg?.id !== lastPage;
     if (pageChanged) {
       clearCanvas();
       lastPage = pg?.id ?? "";
-      localStorage.setItem(key("page"), lastPage);
+      storage.set(key("page"), lastPage);
       send({ t: "view", page: lastPage });
     }
-    world.style.cssText = variablesToCss(doc.variables) + world.style.cssText.replace(/--[^;]+;/g, "");
+    applyVariables(doc.variables);
     void loadFonts(fontFamilies(doc));
 
-    const ctx = { doc, index };
+    const ctx = { doc, index: model.index };
     const seen = new Set<string>();
     const nodes = pg?.children ?? [];
     for (const node of nodes) {
@@ -191,6 +233,7 @@ function startViewer() {
       r.el.remove();
       r.label.remove();
       rendered.delete(id);
+      sizes.delete(id);
     }
     // Keep z-order in sync with the document. Only move frames that are out of place,
     // because moving one makes the browser style and lay it out again.
@@ -204,27 +247,34 @@ function startViewer() {
     // Frames render fully once so we can measure them. After that, content-visibility
     // lets the browser skip painting frames that are off screen.
     requestAnimationFrame(() => {
+      const fresh: Record<string, [number, number]> = {};
       for (const [id, r] of rendered) {
         if (r.el.classList.contains("cv")) continue;
         const w = r.el.offsetWidth, h = r.el.offsetHeight;
         sizes.set(id, { w, h });
+        fresh[id] = [w, h];
         r.el.style.containIntrinsicSize = `auto ${w}px auto ${h}px`;
         r.el.classList.add("cv");
       }
       // The server uses real sizes to auto-place new screens without overlap.
-      send({ t: "sizes", sizes: Object.fromEntries([...sizes].map(([id, s]) => [id, [s.w, s.h]])) });
+      if (resendSizes) for (const [id, s] of sizes) fresh[id] = [s.w, s.h];
+      resendSizes = false;
+      if (Object.keys(fresh).length) send({ t: "sizes", sizes: fresh });
       if (first || pageChanged) restoreCamera();
       else updateOverlay();
     });
 
     updateEmpty();
 
-    if (selected && !document.querySelector(`[data-id="${CSS.escape(selected)}"]`) && !index.has(selected)) selected = null;
-    renderPages();
-    renderLayers();
+    if (selected && !model.index.has(selected) && !world.querySelector(`[data-id="${CSS.escape(selected)}"]`)) selected = null;
+    sidebar.renderPages();
+    // The layer tree only shows the open page, so most updates leave it as it is.
+    if (pageChanged || layersChanged) sidebar.renderLayers(selected);
+    else sidebar.select(selected);
   }
 
   function updateEmpty() {
+    const doc = model.doc;
     const msg = !doc ? "" : !doc.pages.some((p) => p.children.length) ? "No designs yet." : !page()?.children.length ? "This page is empty." : "";
     empty.hidden = !msg;
     if (msg) empty.firstElementChild!.textContent = msg;
@@ -235,166 +285,53 @@ function startViewer() {
    * server's hash of the frame, of each frame holding a component it uses, and the themes.
    */
   function signature(node: PennaNode, pageId: string): string {
-    let sig = frames.get(frameKey(pageId, node.id))?.hash ?? JSON.stringify(node);
+    let sig = model.hashOf(pageId, node.id) ?? JSON.stringify(node);
     for (const id of refsUsed(node)) {
-      const loc = index.get(id);
-      sig += ` ${id}=${loc ? frames.get(frameKey(loc.page.id, loc.top.id))?.hash : "-"}`;
+      const loc = model.index.get(id);
+      sig += ` ${id}=${loc ? model.hashOf(loc.page.id, loc.top.id) : "-"}`;
     }
-    return sig + themesKey;
+    return sig + model.themesKey;
   }
 
   // Unchanged nodes keep their objects between updates, so their refs can be cached.
   const directRefs = new WeakMap<PennaNode, string[]>();
-  function refsIn(node: PennaNode): string[] {
+  function cachedRefs(node: PennaNode): string[] {
     let refs = directRefs.get(node);
-    if (!refs) {
-      const found: string[] = [];
-      walk([node], (n) => void (n.type === "ref" && n.ref && found.push(n.ref)));
-      directRefs.set(node, (refs = found));
-    }
+    if (!refs) directRefs.set(node, (refs = refsIn(node)));
     return refs;
   }
 
   /** Ids of components that `node` uses, directly or through nested instances. */
   function refsUsed(node: PennaNode): Set<string> {
     const out = new Set<string>();
-    const queue = [...refsIn(node)];
+    const queue = [...cachedRefs(node)];
     while (queue.length) {
       const id = queue.pop()!;
       if (out.has(id)) continue;
       out.add(id);
-      const comp = index.get(id)?.node;
-      if (comp) queue.push(...refsIn(comp));
+      const comp = model.index.get(id)?.node;
+      if (comp) queue.push(...cachedRefs(comp));
     }
     return out;
   }
 
-  // ---------- Sidebar ----------
-
-
-  function renderPages() {
-    pagesEl.textContent = "";
-    for (const p of doc?.pages ?? []) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = p.id === pageId ? "row active" : "row";
-      if (p.id === pageId) btn.setAttribute("aria-current", "page");
-      btn.innerHTML = `<span class="lname"></span><span class="count"></span>`;
-      btn.firstElementChild!.textContent = p.name;
-      btn.lastElementChild!.textContent = p.children.length ? String(p.children.length) : "";
-      btn.onclick = () => {
-        if (p.id === pageId) return;
-        saveCamera();
-        pageId = p.id;
-        selected = null;
-        renderDoc(false);
-      };
-      li.appendChild(btn);
-      pagesEl.appendChild(li);
-    }
-  }
-
-  const KIND: Record<string, string> = { text: "type", image: "image", icon: "shapes", svg: "spline", ref: "diamond" };
-  const icon = (name: string, cls = "") => `<i class="ico ${cls}" style="--i:url(/icon/${name}.svg)"></i>`;
-
-  /** Lucide icon for a layer row. Frames show their layout, like Figma's auto layout icons. */
-  function kindIcon(n: PennaNode, depth: number): string {
-    if (n.component) return "component";
-    if (n.type !== "frame") return KIND[n.type] ?? "square-dashed";
-    if (depth === 0) return "frame";
-    const display = String(n.style?.display ?? "");
-    const cls = ` ${n.class ?? ""} `;
-    if (display === "grid" || / grid /.test(cls)) return "layout-grid";
-    if (display === "flex" || / flex /.test(cls)) {
-      const column = String(n.style?.flexDirection ?? "").startsWith("column") || / flex-col /.test(cls);
-      return column ? "rows-3" : "columns-3";
-    }
-    return "square-dashed";
-  }
-
-  function renderLayers() {
-    layersEl.textContent = "";
-    const frag = document.createDocumentFragment();
-    if (selected) {
-      // Reveal the selected node by expanding its ancestors.
-      let loc = index.get(selected.split("/")[0]);
-      while (loc && "type" in loc.parent) {
-        expanded.add(loc.parent.id);
-        loc = index.get(loc.parent.id);
-      }
-    }
-    const row = (n: PennaNode, depth: number) => {
-      const div = document.createElement("div");
-      div.className = "layer";
-      if (n.component) div.classList.add("component");
-      if (n.type === "ref") div.classList.add("instance");
-      // Parts of an instance aren't listed, so highlight the instance itself.
-      if (selected && (n.id === selected || n.id === selected.split("/")[0])) div.classList.add("selected");
-      div.style.paddingInlineStart = 4 + depth * 14 + "px";
-      const hasKids = !!n.children?.length;
-      const open = expanded.has(n.id);
-      if (open) div.classList.add("open");
-      div.innerHTML = `<span class="twisty">${hasKids ? icon("chevron-right") : ""}</span>${icon(kindIcon(n, depth), "kind")}<span class="lname"></span>`;
-      div.querySelector(".lname")!.textContent = n.name ?? n.id;
-      if (n.hidden) div.classList.add("hidden-node");
-      div.querySelector(".twisty")!.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (open) expanded.delete(n.id);
-        else expanded.add(n.id);
-        renderLayers();
-      });
-      div.onclick = () => select(n.id, true);
-      div.ondblclick = () => zoomTo(n.id);
-      div.onmouseenter = () => setHover(n.id);
-      div.onmouseleave = () => setHover(null);
-      frag.appendChild(div);
-      if (hasKids && open) for (const c of n.children!) row(c, depth + 1);
-    };
-    for (const n of page()?.children ?? []) row(n, 0);
-    layersEl.appendChild(frag);
-    layersEl.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
-  }
-
   // ---------- Camera ----------
 
-  let moveTimer: number | undefined;
-  let frameQueued = false;
-
-  function applyCamera() {
-    if (frameQueued) return;
-    frameQueued = true;
-    requestAnimationFrame(() => {
-      frameQueued = false;
-      world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.z})`;
-      zoomBtn.textContent = Math.round(cam.z * 100) + "%";
-      updateOverlay();
-    });
-    // Promote the world to its own GPU layer while moving, then let it re-raster crisply.
-    world.classList.add("moving");
-    clearTimeout(moveTimer);
-    moveTimer = window.setTimeout(() => {
-      world.classList.remove("moving");
-      saveCamera();
-    }, 180);
-  }
-
   function saveCamera() {
-    if (pageId) localStorage.setItem(key(`cam:${pageId}`), JSON.stringify(cam));
+    if (pageId) storage.set(key(`cam:${pageId}`), JSON.stringify(camera.current));
   }
 
   function restoreCamera() {
-    const saved = localStorage.getItem(key(`cam:${pageId}`));
-    if (saved) {
-      cam = JSON.parse(saved);
-      applyCamera();
-    } else fitAll();
+    let saved: unknown = null;
+    try {
+      saved = JSON.parse(storage.get(key(`cam:${pageId}`)) ?? "null");
+    } catch {}
+    if (!camera.restore(saved)) fitAll();
   }
 
-  function bounds(ids?: string[]) {
+  function bounds(): Rect | null {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const [id, r] of rendered) {
-      if (ids && !ids.includes(id)) continue;
       const x = r.node.x ?? 0, y = r.node.y ?? 0;
       x0 = Math.min(x0, x);
       y0 = Math.min(y0, y);
@@ -405,97 +342,21 @@ function startViewer() {
     return x0 === Infinity ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
 
-  function fitRect(b: { x: number; y: number; w: number; h: number }, maxZoom = 1) {
-    const vw = viewport.clientWidth, vh = viewport.clientHeight, pad = 64;
-    const z = Math.min((vw - pad * 2) / Math.max(b.w, 1), (vh - pad * 2) / Math.max(b.h, 1), maxZoom);
-    cam = { z, x: (vw - b.w * z) / 2 - b.x * z, y: (vh - b.h * z) / 2 - b.y * z };
-    applyCamera();
-  }
-
   function fitAll() {
     const b = bounds();
-    if (b) fitRect(b);
+    if (b) camera.fitRect(b);
   }
+
+  const elementOf = (id: string) => world.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
 
   function zoomTo(id: string) {
-    const el = world.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
+    const el = elementOf(id);
     if (!el) return;
+    const cam = camera.current;
     const r = el.getBoundingClientRect();
     const v = viewport.getBoundingClientRect();
-    fitRect({ x: (r.left - v.left - cam.x) / cam.z, y: (r.top - v.top - cam.y) / cam.z, w: r.width / cam.z, h: r.height / cam.z }, 2);
+    camera.fitRect({ x: (r.left - v.left - cam.x) / cam.z, y: (r.top - v.top - cam.y) / cam.z, w: r.width / cam.z, h: r.height / cam.z }, 2);
   }
-
-  function zoomAt(factor: number, sx: number, sy: number) {
-    const z = Math.min(8, Math.max(0.02, cam.z * factor));
-    const k = z / cam.z;
-    cam = { z, x: sx - (sx - cam.x) * k, y: sy - (sy - cam.y) * k };
-    applyCamera();
-  }
-
-  viewport.addEventListener(
-    "wheel",
-    (e) => {
-      e.preventDefault();
-      const v = viewport.getBoundingClientRect();
-      if (e.ctrlKey || e.metaKey) {
-        const dy = Math.max(-30, Math.min(30, e.deltaMode ? e.deltaY * 16 : e.deltaY));
-        zoomAt(Math.exp(-dy / 120), e.clientX - v.left, e.clientY - v.top);
-      } else {
-        const k = e.deltaMode ? 16 : 1;
-        cam.x -= (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) * k;
-        cam.y -= (e.shiftKey && !e.deltaX ? 0 : e.deltaY) * k;
-        applyCamera();
-      }
-    },
-    { passive: false },
-  );
-
-  // Safari pinch gestures.
-  let gestureZ = 1;
-  viewport.addEventListener("gesturestart", (e) => {
-    e.preventDefault();
-    gestureZ = cam.z;
-  });
-  viewport.addEventListener("gesturechange", (e) => {
-    e.preventDefault();
-    const g = e as unknown as { scale: number; clientX: number; clientY: number };
-    const v = viewport.getBoundingClientRect();
-    zoomAt((gestureZ * g.scale) / cam.z, g.clientX - v.left, g.clientY - v.top);
-  });
-
-  // Drag pans, click selects.
-  let drag: { x: number; y: number; cx: number; cy: number; moved: boolean; id: number } | null = null;
-  viewport.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    if ((e.target as HTMLElement).closest("#hud")) return;
-    drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false, id: e.pointerId };
-  });
-  window.addEventListener("pointermove", (e) => {
-    if (drag && drag.id === e.pointerId) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (!drag.moved && Math.hypot(dx, dy) > 3) {
-        drag.moved = true;
-        viewport.classList.add("panning");
-        viewport.setPointerCapture(e.pointerId);
-        setHover(null);
-      }
-      if (drag.moved) {
-        cam.x = drag.cx + dx;
-        cam.y = drag.cy + dy;
-        applyCamera();
-      }
-      return;
-    }
-    if (e.target instanceof Node && viewport.contains(e.target)) queueHover(e.clientX, e.clientY);
-  });
-  window.addEventListener("pointerup", (e) => {
-    if (!drag || drag.id !== e.pointerId) return;
-    const wasClick = !drag.moved;
-    drag = null;
-    viewport.classList.remove("panning");
-    if (wasClick && e.button === 0 && !(e.target as HTMLElement).closest("#hud")) select(hitTest(e.clientX, e.clientY), false);
-  });
-  viewport.addEventListener("pointerleave", () => setHover(null));
 
   function hitTest(x: number, y: number): string | null {
     const el = document.elementFromPoint(x, y);
@@ -527,17 +388,16 @@ function startViewer() {
     selected = id;
     send({ t: "select", page: pageId, ids: id ? [id] : [] });
     if (fromLayers && id) {
-      const el = world.querySelector(`[data-id="${CSS.escape(id)}"]`);
       const v = viewport.getBoundingClientRect();
-      const r = el?.getBoundingClientRect();
+      const r = elementOf(id)?.getBoundingClientRect();
       if (r && (r.right < v.left || r.left > v.right || r.bottom < v.top || r.top > v.bottom)) zoomTo(id);
     }
-    renderLayers();
+    sidebar.select(selected);
     updateOverlay();
   }
 
   function placeBox(box: HTMLElement, id: string | null) {
-    const el = id ? world.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) : null;
+    const el = id ? elementOf(id) : null;
     if (!el) {
       box.style.display = "none";
       return null;
@@ -552,6 +412,7 @@ function startViewer() {
   }
 
   function updateOverlay() {
+    const cam = camera.current;
     for (const [id, r] of rendered) {
       const x = (r.node.x ?? 0) * cam.z + cam.x;
       const y = (r.node.y ?? 0) * cam.z + cam.y - 18;
@@ -569,9 +430,9 @@ function startViewer() {
       info.textContent = "";
       return;
     }
-    const el = world.querySelector<HTMLElement>(`[data-id="${CSS.escape(selected)}"]`);
-    const name = el?.dataset.name ?? selected;
-    const w = Math.round(rect.width / cam.z), h = Math.round(rect.height / cam.z);
+    const name = elementOf(selected)?.dataset.name ?? selected;
+    const z = camera.current.z;
+    const w = Math.round(rect.width / z), h = Math.round(rect.height / z);
     info.innerHTML = `<b></b><span class="muted">${w} × ${h}</span><code title="Click to copy the id"></code>`;
     info.querySelector("b")!.textContent = name;
     const code = info.querySelector("code")!;
@@ -582,7 +443,8 @@ function startViewer() {
   // ---------- Keyboard ----------
 
   window.addEventListener("keydown", (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    // Typing in a field must not trigger shortcuts. A checkbox takes no typing.
+    if ((e.target instanceof HTMLInputElement && e.target.type !== "checkbox") || e.target instanceof HTMLSelectElement) return;
     const mod = e.metaKey || e.ctrlKey;
     if (e.shiftKey && e.code === "Digit1") fitAll();
     else if (e.shiftKey && e.code === "Digit2" && selected) zoomTo(selected);
@@ -591,15 +453,15 @@ function startViewer() {
       send({ t: e.shiftKey ? "redo" : "undo" });
     } else if (mod && (e.key === "=" || e.key === "+")) {
       e.preventDefault();
-      zoomAt(1.25, viewport.clientWidth / 2, viewport.clientHeight / 2);
+      camera.zoomCentre(1.25);
     } else if (mod && e.key === "-") {
       e.preventDefault();
-      zoomAt(0.8, viewport.clientWidth / 2, viewport.clientHeight / 2);
+      camera.zoomCentre(0.8);
     } else if (mod && e.key === "0") {
       e.preventDefault();
-      zoomAt(1 / cam.z, viewport.clientWidth / 2, viewport.clientHeight / 2);
+      camera.zoomCentre(1 / camera.current.z);
     } else if (e.key === "Escape" && selected) {
-      const parent = world.querySelector(`[data-id="${CSS.escape(selected)}"]`)?.parentElement?.closest<HTMLElement>("[data-id]");
+      const parent = elementOf(selected)?.parentElement?.closest<HTMLElement>("[data-id]");
       select(parent?.dataset.id ?? null, false);
     }
   });

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ExecClient, findServer, listServers, spawnServer } from "./server/client.ts";
-import { startServer } from "./server/http.ts";
+import { AlreadyRunning, startServer } from "./server/http.ts";
 import { runMcp } from "./server/mcp.ts";
 import { pkgPath } from "./server/paths.ts";
 import { defaultPort } from "./server/project.ts";
@@ -62,7 +62,15 @@ async function main() {
         if (open) openBrowser(existing.url);
         return;
       }
-      const server = await startServer(root, port);
+      const server = await startServer(root, port).catch(async (err) => {
+        // Lost a race with another process that started this project's server.
+        if (!(err instanceof AlreadyRunning)) throw err;
+        const other = await findServer(root);
+        if (!quiet) console.log(`penna is already running for this project: ${other?.url ?? `http://localhost:${err.port}`}`);
+        if (open && other) openBrowser(other.url);
+        return null;
+      });
+      if (!server) return;
       if (!quiet) {
         console.log(`penna  ${server.info.url}`);
         console.log(`       ${path.relative(process.cwd(), server.store.dir) || ".penna"}/ · ${server.store.get().pages.length} page(s)`);
